@@ -36,8 +36,11 @@ MainWindow.xaml.cs
 using GraphX.Common.Enums;
 using GraphX.Controls;
 using GraphX.Logic.Models;
+using Microsoft.Win32;
+using NKM1.DTO;
 using NKM1.Impulse;
 using NKM1.Models;
+using NKM1.Service;
 using NKM1.Visual;
 using System.Text;
 using System.Windows;
@@ -294,7 +297,110 @@ public partial class MainWindow : Window
         wnd.ShowDialog();
     }
 
+    private void BtnSave_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new SaveFileDialog { Filter = "Graph files (*.graph)|*.graph", DefaultExt = ".graph" };
+        if (dlg.ShowDialog() == true)
+        {
+            GraphFileService.Save(graph, graphArea, dlg.FileName);
+        }    
+            
+    }
+
+    private void BtnLoad_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog { Filter = "Graph files (*.graph)|*.graph", DefaultExt = ".graph" };
+        if (dlg.ShowDialog() == true)
+        {
+            GraphFileService.Load(graph, graphArea, dlg.FileName);
+            RefreshLists();
+        }
+            
+    }
+
 }
+--------------------------------------------------------------------------------
+
+EdgeDto.cs
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Text.Json.Serialization;
+using System.Threading.Tasks;
+
+namespace NKM1.DTO
+{
+
+    public class EdgeDto
+    {
+        [JsonPropertyName("vertex1")] public int Vertex1 { get; set; }
+        [JsonPropertyName("vertex2")] public int Vertex2 { get; set; }
+        // weight в файле — строка, поэтому сохраняем как string
+        [JsonPropertyName("weight")] public string Weight { get; set; } = "1.0";
+        [JsonPropertyName("isDirected")] public bool IsDirected { get; set; } = true;
+        [JsonPropertyName("controlStep")] public int ControlStep { get; set; } = 0;
+        [JsonPropertyName("fontSize")] public double FontSize { get; set; } = 18;
+        [JsonPropertyName("lineWidth")] public double LineWidth { get; set; } = 2;
+        [JsonPropertyName("background")] public string Background { get; set; } = "#000000";
+        [JsonPropertyName("color")] public string Color { get; set; } = "#000000";
+    }
+}
+
+--------------------------------------------------------------------------------
+
+GraphFileDto.cs
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.Win32; // OpenFileDialog / SaveFileDialog
+
+
+namespace NKM1.DTO
+{
+    public class GraphFileDto
+    {
+        [JsonPropertyName("x0")] public double X0 { get; set; }
+        [JsonPropertyName("y0")] public double Y0 { get; set; }
+        [JsonPropertyName("vertices")] public List<VertexDto> Vertices { get; set; } = new List<VertexDto>();
+        [JsonPropertyName("edges")] public List<EdgeDto> Edges { get; set; } = new List<EdgeDto>();
+        [JsonPropertyName("texts")] public List<object> Texts { get; set; } = new List<object>();
+    }
+}
+
+--------------------------------------------------------------------------------
+
+VertexDto.cs
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Text.Json.Serialization;
+using System.Threading.Tasks;
+
+namespace NKM1.DTO
+{
+    public class VertexDto
+    {
+        [JsonPropertyName("x")] public double X { get; set; }
+        [JsonPropertyName("y")] public double Y { get; set; }
+        [JsonPropertyName("name")] public string Name { get; set; } = "";
+        [JsonPropertyName("radius")] public double Radius { get; set; } = 20;
+        [JsonPropertyName("background")] public string Background { get; set; } = "#ffffff";
+        [JsonPropertyName("fontSize")] public double FontSize { get; set; } = 18;
+        [JsonPropertyName("color")] public string Color { get; set; } = "#000000";
+        [JsonPropertyName("border")] public string Border { get; set; } = "#000000";
+    }
+}
+
 --------------------------------------------------------------------------------
 
 ImpulseWindow.xaml.cs
@@ -1226,6 +1332,119 @@ namespace NKM1.Models
 
 --------------------------------------------------------------------------------
 
+GraphFileService.cs
+
+using NKM1.DTO;
+using NKM1.Models;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Tasks;
+using System.Windows.Controls;
+
+namespace NKM1.Service
+{
+    public static class GraphFileService
+    {
+        public static void Save(NKM graph, GraphX.Controls.GraphArea<Factor, Link, NKM> graphArea, string path)
+        {
+            var dto = new GraphFileDto();
+            dto.X0 = 0; dto.Y0 = 0;
+
+            // Вершины
+            foreach (var v in graph.Vertices)
+            {
+                double x = 0, y = 0;
+                if (graphArea.VertexList.TryGetValue(v, out var vc))
+                {
+                    x = Canvas.GetLeft(vc);
+                    y = Canvas.GetTop(vc);
+                }
+
+                dto.Vertices.Add(new VertexDto
+                {
+                    Name = v.Name,
+                    X = x,
+                    Y = y,
+                    Radius = 20,
+                    Background = "#ffffff",
+                    FontSize = 18,
+                    Color = "#000000",
+                    Border = "#000000"
+                });
+            }
+
+            // Рёбра
+            foreach (var e in graph.Edges)
+            {
+                int idx1 = graph.Vertices.ToList().IndexOf(e.Source);
+                int idx2 = graph.Vertices.ToList().IndexOf(e.Target);
+                dto.Edges.Add(new EdgeDto
+                {
+                    Vertex1 = idx1,
+                    Vertex2 = idx2,
+                    Weight = e.Weight.ToString(CultureInfo.InvariantCulture),
+                    IsDirected = true,
+                    ControlStep = 0,
+                    FontSize = 18,
+                    LineWidth = 2,
+                    Background = "#000000",
+                    Color = "#000000"
+                });
+            }
+
+            dto.Texts = new List<object>();
+
+            var json = JsonSerializer.Serialize(dto, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(path, json, Encoding.UTF8);
+        }
+
+        public static void Load(NKM graph, GraphX.Controls.GraphArea<Factor, Link, NKM> graphArea, string path)
+        {
+            var json = File.ReadAllText(path, Encoding.UTF8);
+            var dto = JsonSerializer.Deserialize<GraphFileDto>(json);
+            if (dto == null) throw new Exception("Не удалось распарсить файл");
+
+            foreach (var e in graph.Vertices)
+            {
+                graph.RemoveVertex(e);
+            }
+
+            // создаём вершины
+            foreach (var vdto in dto.Vertices)
+                graph.AddVertex(new Factor(vdto.Name));
+
+            // создаём рёбра
+            foreach (var edto in dto.Edges)
+            {
+                var s = graph.Vertices.ElementAt(edto.Vertex1);
+                var t = graph.Vertices.ElementAt(edto.Vertex2);
+                if (double.TryParse(edto.Weight, NumberStyles.Any, CultureInfo.InvariantCulture, out double w))
+                    graph.AddEdge(s, t, w);
+            }
+
+            // обновляем визуал
+            graphArea.GenerateGraph(true, true);
+
+            // расставляем позиции
+            //for (int i = 0; i < dto.Vertices.Count; i++)
+            //{
+            //    if (graphArea.VertexList.TryGetValue(graph.Vertices.ElementAt(i), out var vc))
+            //    {
+            //        Canvas.SetLeft(vc, dto.Vertices[i].X);
+            //        Canvas.SetTop(vc, dto.Vertices[i].Y);
+            //    }
+            //}
+        }
+    }
+}
+
+--------------------------------------------------------------------------------
+
 AddEdgeWindow.xaml.cs
 
 using NKM1.Models;
@@ -2005,7 +2224,7 @@ namespace XamlGeneratedNamespace {
 
 MainWindow.g.cs
 
-#pragma checksum "..\..\..\MainWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "1F071C41E4971A31C2DA85E4BD291ACC1E2B1792"
+#pragma checksum "..\..\..\MainWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "49B3DADA4F16541E7A029042BECCCF5E23380C92"
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
@@ -2204,9 +2423,21 @@ namespace NKM1 {
             {
             case 1:
             this.Btn1 = ((System.Windows.Controls.Button)(target));
+            
+            #line 13 "..\..\..\MainWindow.xaml"
+            this.Btn1.Click += new System.Windows.RoutedEventHandler(this.BtnSave_Click);
+            
+            #line default
+            #line hidden
             return;
             case 2:
             this.Btn2 = ((System.Windows.Controls.Button)(target));
+            
+            #line 15 "..\..\..\MainWindow.xaml"
+            this.Btn2.Click += new System.Windows.RoutedEventHandler(this.BtnLoad_Click);
+            
+            #line default
+            #line hidden
             return;
             case 3:
             this.BtnLayout = ((System.Windows.Controls.Button)(target));
@@ -2312,7 +2543,7 @@ namespace NKM1 {
 
 MainWindow.g.i.cs
 
-#pragma checksum "..\..\..\MainWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "1F071C41E4971A31C2DA85E4BD291ACC1E2B1792"
+#pragma checksum "..\..\..\MainWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "49B3DADA4F16541E7A029042BECCCF5E23380C92"
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
@@ -2511,9 +2742,21 @@ namespace NKM1 {
             {
             case 1:
             this.Btn1 = ((System.Windows.Controls.Button)(target));
+            
+            #line 13 "..\..\..\MainWindow.xaml"
+            this.Btn1.Click += new System.Windows.RoutedEventHandler(this.BtnSave_Click);
+            
+            #line default
+            #line hidden
             return;
             case 2:
             this.Btn2 = ((System.Windows.Controls.Button)(target));
+            
+            #line 15 "..\..\..\MainWindow.xaml"
+            this.Btn2.Click += new System.Windows.RoutedEventHandler(this.BtnLoad_Click);
+            
+            #line default
+            #line hidden
             return;
             case 3:
             this.BtnLayout = ((System.Windows.Controls.Button)(target));
@@ -2622,7 +2865,6 @@ NKM1.AssemblyInfo.cs
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
-//     Runtime Version:4.0.30319.42000
 //
 //     Changes to this file may cause incorrect behavior and will be lost if
 //     the code is regenerated.
@@ -2635,7 +2877,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e4c4904acbbaa1d6aea3cd7448b0884db019a16b")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
 [assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
 [assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -3419,6 +3661,88 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_4lc4xqfe_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_4oea5flr_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e4c4904acbbaa1d6aea3cd7448b0884db019a16b")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_4oea5flr_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_4ssiwkjq_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_4ssiwkjq_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -6561,6 +6885,7 @@ ImpulseWindow.g.cs
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
 //
 //     Changes to this file may cause incorrect behavior and will be lost if
 //     the code is regenerated.
@@ -6819,7 +7144,7 @@ namespace NKM1.Impulse {
                 return;
             }
             _contentLoaded = true;
-            System.Uri resourceLocater = new System.Uri("/NKM1;V1.0.0.0;component/impulse/impulsewindow.xaml", System.UriKind.Relative);
+            System.Uri resourceLocater = new System.Uri("/NKM1;component/impulse/impulsewindow.xaml", System.UriKind.Relative);
             
             #line 1 "..\..\..\..\Impulse\ImpulseWindow.xaml"
             System.Windows.Application.LoadComponent(this, resourceLocater);
@@ -8280,16 +8605,16 @@ MainWindow.xaml
         Title="Нечеткая когнитиваня модель" Height="800" Width="1222">
     <DockPanel>
         <ToolBar DockPanel.Dock="Top">
-            <Button Name="Btn1" >Сохранить</Button>
+            <Button Name="Btn1" Click="BtnSave_Click" >Сохранить</Button>
             <Separator />
-            <Button Name="Btn2" >Загрузить</Button>
+            <Button Name="Btn2" Click="BtnLoad_Click" >Загрузить</Button>
             <Separator />
             <Button Name="BtnLayout" Click="BtnLayout_Click">Выравнять</Button>
 			<Separator />
 			<Button Name="BtnCycle" Click="BtnCycle_Click">Циклы</Button>
 			<Separator />
-			<Button Name="BtnImpulse" Click="BtnImpulse_Click">Импульсы</Button>
-		</ToolBar>
+            <Button Name="BtnImpulse" Click="BtnImpulse_Click">Импульсы</Button>
+        </ToolBar>
 
 
         <Grid>
