@@ -42,283 +42,350 @@ using NKM1.Impulse;
 using NKM1.Models;
 using NKM1.Service;
 using NKM1.Visual;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Linq;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
-using System.Xml.Linq;
 
-namespace NKM1;
-
-/// <summary>
-/// Interaction logic for MainWindow.xaml
-/// </summary>
-public partial class MainWindow : Window
+namespace NKM1
 {
-    private DataGraphLogicCore? graphLogic;
-    private NKM? graph;
-
-    public MainWindow()
-    {
-        InitializeComponent();
-        //graph = new NKM();
-        graph = NKM.CreateRandomDirectedGraph(5, 10, 123);
-        //graph = DataGraph.RandomGraph();
-
-        graphLogic = new DataGraphLogicCore(graph);
-        graphArea.LogicCore = graphLogic;
-
-        ZoomControl.SetViewFinderVisibility(ZoomCtrl, Visibility.Visible);
-        graphArea.SetupSettings();
-        RefreshLists();
-    }
-
     /// <summary>
-    /// Обновляет списки вершин и рёбер в элементах управления (ListBox’ы)
-    /// и перерисовывает граф в GraphArea.
+    /// Interaction logic for MainWindow.xaml
+    /// Здесь добавлены: коллекция ImpulseRows и перенос управления списком импульсов.
     /// </summary>
-    private void RefreshLists()
+    public partial class MainWindow : Window
     {
-        // Обновляем список вершин
-        LstVertices.ItemsSource = null;
-        LstVertices.ItemsSource = graph?.Vertices.Select(v => v.Name).ToList();
+        private DataGraphLogicCore? graphLogic;
+        private NKM? graph;
 
-        // Обновляем список рёбер
-        LstEdges.ItemsSource = null;
-        LstEdges.ItemsSource = graph?.Edges
-            .Select(e => $"{e.Source?.Name}-{e.Target?.Name} : {e.Weight}")
-            .ToList();
+        // Новое: список строк импульсов, управляемый MainWindow.
+        // Эту коллекцию мы передаём в ImpulseWindow (в конструктор).
+        private List<VertexImpulseRow> ImpulseRows = new List<VertexImpulseRow>();
 
-        // Перерисовываем визуализацию
-        UpdateGraphAreaFromModel();
-    }
-
-    /// <summary>
-    /// Строит визуальный граф в GraphArea на основании текущей модели (graph).
-    /// </summary>
-    private void UpdateGraphAreaFromModel()
-    {
-        if (graphArea == null || graphLogic == null || graph == null) return;
-
-        // Генерируем визуальные контролы (VertexControl / EdgeControl)
-        try { graphArea.GenerateGraph(true, true); }
-        catch { try { graphArea.GenerateGraph(true); } catch { graphArea.RelayoutGraph(); } }
-
-        // Устанавливаем подписи рёбер (веса)
-        try
+        public MainWindow()
         {
-            foreach (var kv in graphArea.EdgesList)
+            InitializeComponent();
+
+            // Пример: создаём случайный граф для демонстрации
+            graph = NKM.CreateRandomDirectedGraph(5, 10, 123);
+            graphLogic = new DataGraphLogicCore(graph);
+            graphArea.LogicCore = graphLogic;
+            ZoomControl.SetViewFinderVisibility(ZoomCtrl, Visibility.Visible);
+            graphArea.SetupSettings();
+
+            RefreshLists();
+        }
+
+        /// <summary>
+        /// Обновляет списки вершин и рёбер в элементах управления (ListBox’ы),
+        /// а также синхронизирует ImpulseRows в соответствии с текущим графом.
+        /// </summary>
+        private void RefreshLists()
+        {
+            // Обновляем список вершин
+            LstVertices.ItemsSource = null;
+            LstVertices.ItemsSource = graph?.Vertices.Select(v => v.Name).OrderBy(v => v).ToList();
+
+            // Обновляем список рёбер
+            LstEdges.ItemsSource = null;
+            LstEdges.ItemsSource = graph?.Edges
+                .Select(e => $"{e.Source?.Name}-{e.Target?.Name} : {e.Weight}")
+                .OrderBy(e => e)
+                .ToList();
+
+            // Перерисовываем визуализацию графа
+            UpdateGraphAreaFromModel();
+
+            // === Синхронизация ImpulseRows с текущими вершинами графа ===
+            // Сохраним существующие значения импульсов по имени вершины
+            var existingByName = ImpulseRows.ToDictionary(r => r.Vertex?.ID ?? -1, r => r);
+
+            var newRows = new List<VertexImpulseRow>();
+            if (graph != null)
             {
-                var edgeControl = kv.Value;
-                if (edgeControl == null) continue;
-                var dataEdge = edgeControl.Edge as Link;
-                if (dataEdge != null)
+                foreach (var v in graph.Vertices)
                 {
-                    // Ищем элемент TextBlock с именем "PART_EdgeLabel" внутри EdgeControl
-                    var label = FindVisualChildByName(edgeControl, "PART_EdgeLabel") as TextBlock;
-                    if (label != null) label.Text = dataEdge.Weight.ToString();
-
-                    // Если метки нет — отображаем вес во всплывающей подсказке
-                    edgeControl.ToolTip = dataEdge.Weight.ToString();
-
-                    // Стиль линии по весу
-                    if (dataEdge.Weight >= 0)
+                    // Если уже есть строка для данной вершины (по ID), сохраним её значения
+                    if (existingByName.TryGetValue(v.ID, out var existRow))
                     {
-                        edgeControl.DashStyle = EdgeDashStyle.Solid;
+                        existRow.Vertex = v;
+                        existRow.Name = v.Name;
+                        newRows.Add(existRow);
                     }
                     else
                     {
-                        edgeControl.DashStyle = EdgeDashStyle.Dash;
+                        // новая строка — по умолчанию импульс 0
+                        newRows.Add(new VertexImpulseRow
+                        {
+                            Vertex = v,
+                            Name = v.Name,
+                            Impulse = "0.0",
+                            IsVisible = false
+                        });
+                    }
+                }
+            }
+
+            ImpulseRows = newRows;
+
+            // Привязываем ItemsControl в MainWindow к ImpulseRows
+            ImpulsesList.ItemsSource = null;
+            ImpulsesList.ItemsSource = ImpulseRows;
+
+            // --- подписываемся на изменение IsVisible ---
+            foreach (var row in ImpulseRows)
+            {
+                row.PropertyChanged -= VertexRow_PropertyChanged;
+                row.PropertyChanged += VertexRow_PropertyChanged;
+            }
+        }
+
+        private void VertexRow_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(VertexImpulseRow.IsVisible))
+            {
+                var row = sender as VertexImpulseRow;
+                if (row?.Vertex == null || graphArea == null) return;
+
+                // найти визуальный контрол вершины в GraphX
+                if (graphArea.VertexList.TryGetValue(row.Vertex, out var vertexControl))
+                {
+                    if (row.IsVisible)
+                    {
+                        vertexControl.Background = Brushes.LightYellow; // вершина подсвечивается красным
+                    }
+                    else
+                    {
+                        vertexControl.Background = Brushes.White; // стандартный цвет 
                     }
                 }
             }
         }
-        catch { /* не критично */ }
-    }
+
+
+        /// <summary>
+        /// Строит визуальный граф в GraphArea на основании текущей модели (graph).
+        /// (исходная логика перенесена из проекта)
+        /// </summary>
+        private void UpdateGraphAreaFromModel()
+        {
+            if (graphArea == null || graphLogic == null || graph == null) return;
+
+            // Генерируем визуальные контролы (VertexControl / EdgeControl)
+            try
+            {
+                graphArea.GenerateGraph(true, true);
+            }
+            catch
+            {
+                try { graphArea.GenerateGraph(true); } catch { graphArea.RelayoutGraph(); }
+            }
+
+            
+            try
+            {
+                // Устанавливаем подписи рёбер (веса)
+                foreach (var kv in graphArea.EdgesList)
+                {
+                    var edgeControl = kv.Value;
+                    if (edgeControl == null) continue;
+                    var dataEdge = edgeControl.Edge as Link;
+                    if (dataEdge is not null)
+                    {
+                        // Ищем элемент TextBlock с именем "PART_EdgeLabel" внутри EdgeControl
+                        var label = FindVisualChildByName(edgeControl, "PART_EdgeLabel") as TextBlock;
+                        if (label is not null) label.Text = dataEdge.Weight.ToString();
+                            edgeControl.ToolTip = dataEdge.Weight.ToString();
+                        if (dataEdge.Weight >= 0)
+                        {
+                            if (label is not null)
+                            {
+                                label.Background = Brushes.Green;
+                                label.Foreground = Brushes.Green;
+                            }
+                            edgeControl.Foreground = Brushes.Green;
+                            edgeControl.Background = Brushes.Green;
+                            edgeControl.DashStyle = EdgeDashStyle.Solid;
+                        }
+                        else
+                        {
+                            if (label is not null)
+                            {
+                                label.Background = Brushes.Red;
+                                label.Foreground = Brushes.Red;
+                            }
+
+                            edgeControl.Foreground = Brushes.Red;
+                            edgeControl.Background = Brushes.Red;
+                            edgeControl.DashStyle = EdgeDashStyle.Dash;
+                        }
+                    }
+                }
+
+                foreach (var kv in graphArea.VertexList)
+                {
+                    var vertexControl = kv.Value;
+                    if (vertexControl == null) continue;
+                    var dataVertex = vertexControl.Vertex as Factor;
+                    if (dataVertex != null)
+                    {
+                        if(ImpulseRows.Any(row => row.Vertex.ID == dataVertex.ID && row.IsVisible))
+                            vertexControl.Background = Brushes.LightYellow; // вершина подсвечивается красным
+                        else
+                            vertexControl.Background = Brushes.White; // стандартный цвет
+                    }
+                }
+            }
+            catch { /* не критично */ }
+        }
 
     /// <summary>
     /// Рекурсивный поиск визуального элемента по имени в дереве WPF.
     /// Используется для поиска текстовых меток рёбер.
     /// </summary>
-    private FrameworkElement FindVisualChildByName(DependencyObject parent, string name)
-    {
-        if (parent == null) return null;
-        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        private FrameworkElement FindVisualChildByName(DependencyObject parent, string name)
         {
-            var child = VisualTreeHelper.GetChild(parent, i);
+            if (parent == null) return null;
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
             if (child is FrameworkElement fe && fe.Name == name)
                 return fe;
-            var result = FindVisualChildByName(child, name);
-            if (result != null) return result;
-        }
-        return null;
-    }
-
-    /// <summary>Кнопка "Добавить вершину".</summary>
-    private void BtnAddVertex_Click(object sender, RoutedEventArgs e)
-    {
-        var addWindow = new AddVertexWindow(graph)
-        {
-            Owner = this
-        };
-
-        if (addWindow.ShowDialog() == true)
-        {
-
-            if (graph.AddVertex(new Factor(addWindow.Name)))
-            {
-                RefreshLists();
-                MessageBox.Show($"Добавлен новый фактор '{addWindow.Name}'", "Успешно", MessageBoxButton.OK, MessageBoxImage.Information);
+                var result = FindVisualChildByName(child, name);
+                if (result != null) return result;
             }
-            else
+            return null;
+        }
+
+        // --- Обработчики кнопок (оставлены исходные, только BtnImpulse изменён) ---
+        private void BtnAddVertex_Click(object sender, RoutedEventArgs e)
+        {
+            var addWindow = new AddVertexWindow(graph) { Owner = this };
+            if (addWindow.ShowDialog() == true)
             {
-                MessageBox.Show("Не удалось добавить фактор", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                if (graph.AddVertex(new Factor(addWindow.Name)))
+                {
+                    RefreshLists();
+                    MessageBox.Show($"Добавлен новый фактор '{addWindow.Name}'", "Успешно", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    MessageBox.Show("Не удалось добавить фактор", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
             }
         }
-    }
 
-    /// <summary>Кнопка "Удалить вершину".</summary>
-    private void BtnRemoveVertex_Click(object sender, RoutedEventArgs e)
-    {
-        if (LstVertices.SelectedItem == null) return;
-        var id = LstVertices.SelectedItem.ToString();
-        graph.RemoveVertex(id);
-        RefreshLists();
-    }
-
-    /// <summary>Кнопка "Добавить ребро" между выбранными вершинами.</summary>
-    private void BtnAddEdge_Click(object sender, RoutedEventArgs e)
-    {
-        var addEdgeWindow = new AddEdgeWindow(graph)
+        private void BtnRemoveVertex_Click(object sender, RoutedEventArgs e)
         {
-            Owner = this
-        };
-
-        if (addEdgeWindow.ShowDialog() == true)
-        {
-            if (graph.AddEdge(addEdgeWindow.Source, addEdgeWindow.Target, addEdgeWindow.Weight))
-            {
-                RefreshLists();
-                MessageBox.Show($"Добавлена новая связь '{addEdgeWindow.Source.Name}' -> '{addEdgeWindow.Target.Name}' с оценкой {addEdgeWindow.Weight}", "Успешно", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            else
-            {
-                MessageBox.Show($"Не удалось добавить связь '{addEdgeWindow.Source.Name}' -> '{addEdgeWindow.Target.Name}'", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-    }
-
-    /// <summary>Кнопка "Удалить ребро".</summary>
-    private void BtnRemoveEdge_Click(object sender, RoutedEventArgs e)
-    {
-        if (LstEdges.SelectedItem == null) return;
-        var text = LstEdges.SelectedItem.ToString();
-        var dash = text.IndexOf('-');
-        var colon = text.IndexOf(':');
-        var source = text.Substring(0, dash).Trim();
-        var target = text.Substring(dash + 1, colon - dash - 1).Trim();
-        graph.RemoveEdge(source, target);
-        RefreshLists();
-    }
-
-    /// <summary>Обработчик выбора вершины — отображает её имя в TextBox.</summary>
-
-    /// <summary>Кнопка "Переименовать вершину".</summary>
-    private void BtnSetVertexName_Click(object sender, RoutedEventArgs e)
-    {
-        if (LstVertices.SelectedItem == null) { MessageBox.Show("Выберите вершину"); return; }
-        var oldName = LstVertices.SelectedItem?.ToString();
-
-        if (string.IsNullOrEmpty(oldName)) { MessageBox.Show("Выберите вершину"); return; }
-
-        var renameVertexWindow = new RenameVertexWindow(graph, graph.Vertices.First(v => v.Name.Equals(LstVertices.SelectedItem.ToString(), StringComparison.OrdinalIgnoreCase)))
-        {
-            Owner = this
-        };
-
-        if (renameVertexWindow.ShowDialog() == true)
-        {
-            graph.RenameVertex(oldName, renameVertexWindow.NewName);
+            if (LstVertices.SelectedItem == null) return;
+            var id = LstVertices.SelectedItem.ToString();
+            graph.RemoveVertex(id);
             RefreshLists();
         }
-    }
 
-    /// <summary>Кнопка "Изменить вес ребра".</summary>
-    private void BtnSetWeight_Click(object sender, RoutedEventArgs e)
-    {
-
-        if (LstEdges.SelectedItem is null) { MessageBox.Show("Выберите связь"); return; }
-        var text = LstEdges.SelectedItem.ToString();
-        if (string.IsNullOrEmpty(text)) { MessageBox.Show("Выберите связь"); return; }
-        var dash = text.IndexOf('-');
-        var colon = text.IndexOf(':');
-        var source = text.Substring(0, dash).Trim();
-        var target = text.Substring(dash + 1, colon - dash - 1).Trim();
-        var link = graph.Edges.FirstOrDefault(e => e.Target.Name.Equals(target) && e.Source.Name.Equals(source));
-        if(link is null) { MessageBox.Show("Выберите связь"); return; }
-
-        var editEdgeWindow = new EditEdgeWindow(graph, link)
+        private void BtnAddEdge_Click(object sender, RoutedEventArgs e)
         {
-            Owner = this
-        };
-
-        if (editEdgeWindow.ShowDialog() == true)
-        {
-            if (graph.RemoveEdge(link) && graph.AddEdge(editEdgeWindow.Source, editEdgeWindow.Target, editEdgeWindow.Weight))
+            var addEdgeWindow = new AddEdgeWindow(graph) { Owner = this };
+            if (addEdgeWindow.ShowDialog() == true)
             {
-                RefreshLists();
-                MessageBox.Show($"Изменена связь '{link.Source.Name}' -> '{link.Target.Name}' с оценкой {link.Weight} \n на {editEdgeWindow.Source.Name}' -> '{editEdgeWindow.Target.Name}' с оценкой {editEdgeWindow.Weight}", "Успешно", MessageBoxButton.OK, MessageBoxImage.Information);
+                if (graph.AddEdge(addEdgeWindow.Source, addEdgeWindow.Target, addEdgeWindow.Weight))
+                {
+                    RefreshLists();
+                    MessageBox.Show($"Добавлена новая связь '{addEdgeWindow.Source.Name}' -> '{addEdgeWindow.Target.Name}' с оценкой {addEdgeWindow.Weight}", "Успешно", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    MessageBox.Show($"Не удалось добавить связь '{addEdgeWindow.Source.Name}' -> '{addEdgeWindow.Target.Name}'", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
             }
         }
-    }
 
-    /// <summary>Кнопка "Перестроить layout" (перерасположить вершины).</summary>
-    private void BtnLayout_Click(object sender, RoutedEventArgs e)
-    {
-        try { graphArea?.RelayoutGraph(); }
-        catch (Exception ex) { MessageBox.Show("Layout failed: " + ex.Message); }
-    }
-
-	private void BtnCycle_Click(object sender, RoutedEventArgs e)
-	{
-        new StructureAnalizys(graph).ShowDialog();
-    }
-
-    private void BtnImpulse_Click(object sender, RoutedEventArgs e)
-    {
-        var wnd = new NKM1.Impulse.ImpulseWindow(graph);
-        wnd.Owner = this;
-        wnd.ShowDialog();
-    }
-
-    private void BtnSave_Click(object sender, RoutedEventArgs e)
-    {
-        var dlg = new SaveFileDialog { Filter = "Graph files (*.graph)|*.graph", DefaultExt = ".graph" };
-        if (dlg.ShowDialog() == true)
+        private void BtnRemoveEdge_Click(object sender, RoutedEventArgs e)
         {
-            GraphFileService.Save(graph, graphArea, dlg.FileName);
-        }    
-            
-    }
-
-    private void BtnLoad_Click(object sender, RoutedEventArgs e)
-    {
-        var dlg = new OpenFileDialog { Filter = "Graph files (*.graph)|*.graph", DefaultExt = ".graph" };
-        if (dlg.ShowDialog() == true)
-        {
-            GraphFileService.Load(graph, graphArea, dlg.FileName);
+            if (LstEdges.SelectedItem == null) return;
+            var text = LstEdges.SelectedItem.ToString();
+            var dash = text.IndexOf('-');
+            var colon = text.IndexOf(':');
+            var source = text.Substring(0, dash).Trim();
+            var target = text.Substring(dash + 1, colon - dash - 1).Trim();
+            graph.RemoveEdge(source, target);
             RefreshLists();
         }
-            
-    }
 
+        private void BtnSetVertexName_Click(object sender, RoutedEventArgs e)
+        {
+            if (LstVertices.SelectedItem == null) { MessageBox.Show("Выберите вершину"); return; }
+            var oldName = LstVertices.SelectedItem?.ToString();
+            if (string.IsNullOrEmpty(oldName)) { MessageBox.Show("Выберите вершину"); return; }
+            var renameVertexWindow = new RenameVertexWindow(graph, graph.Vertices.First(v => v.Name.Equals(LstVertices.SelectedItem.ToString(), StringComparison.OrdinalIgnoreCase))) { Owner = this };
+            if (renameVertexWindow.ShowDialog() == true)
+            {
+                graph.RenameVertex(oldName, renameVertexWindow.NewName);
+                RefreshLists();
+            }
+        }
+
+        private void BtnSetWeight_Click(object sender, RoutedEventArgs e)
+        {
+            if (LstEdges.SelectedItem is null) { MessageBox.Show("Выберите связь"); return; }
+            var text = LstEdges.SelectedItem.ToString();
+            if (string.IsNullOrEmpty(text)) { MessageBox.Show("Выберите связь"); return; }
+            var dash = text.IndexOf('-');
+            var colon = text.IndexOf(':');
+            var source = text.Substring(0, dash).Trim();
+            var target = text.Substring(dash + 1, colon - dash - 1).Trim();
+            var link = graph.Edges.FirstOrDefault(e => e.Target.Name.Equals(target) && e.Source.Name.Equals(source));
+            if (link is null) { MessageBox.Show("Выберите связь"); return; }
+            var editEdgeWindow = new EditEdgeWindow(graph, link) { Owner = this };
+            if (editEdgeWindow.ShowDialog() == true)
+            {
+                if (graph.RemoveEdge(link) && graph.AddEdge(editEdgeWindow.Source, editEdgeWindow.Target, editEdgeWindow.Weight))
+                {
+                    RefreshLists();
+                    MessageBox.Show($"Изменена связь '{link.Source.Name}' -> '{link.Target.Name}' с оценкой {link.Weight} \n на {editEdgeWindow.Source.Name}' -> '{editEdgeWindow.Target.Name}' с оценкой {editEdgeWindow.Weight}", "Успешно", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
+        }
+
+        private void BtnLayout_Click(object sender, RoutedEventArgs e)
+        {
+            try { graphArea?.RelayoutGraph(); } catch (Exception ex) { MessageBox.Show("Layout failed: " + ex.Message); }
+        }
+
+        private void BtnCycle_Click(object sender, RoutedEventArgs e)
+        {
+            new StructureAnalizys(graph).ShowDialog();
+        }
+
+        /// <summary>
+        /// Открываем окно импульсов — передаём ему управляемый MainWindow список ImpulseRows
+        /// (и граф для выполнения симуляции).
+        /// </summary>
+        private void BtnImpulse_Click(object sender, RoutedEventArgs e)
+        {
+            var wnd = new NKM1.Impulse.ImpulseWindow(ImpulseRows, graph);
+            wnd.Owner = this;
+            wnd.ShowDialog();
+        }
+
+        private void BtnSave_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new SaveFileDialog { Filter = "Graph files (*.graph)|*.graph", DefaultExt = ".graph" };
+            if (dlg.ShowDialog() == true) GraphFileService.Save(graph, graphArea, dlg.FileName);
+        }
+
+        private void BtnLoad_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new OpenFileDialog { Filter = "Graph files (*.graph)|*.graph", DefaultExt = ".graph" };
+            if (dlg.ShowDialog() == true) { GraphFileService.Load(graph, graphArea, dlg.FileName); RefreshLists(); }
+        }
+    }
 }
+
 --------------------------------------------------------------------------------
 
 EdgeDto.cs
@@ -410,7 +477,6 @@ using NKM1;
 using NKM1.Models;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Linq;
 using System.Text;
 using System.Windows;
@@ -421,35 +487,27 @@ using System.Windows.Shapes;
 
 namespace NKM1.Impulse
 {
+    /// <summary>
+    /// Логика окна импульсов.
+    /// </summary>
     public partial class ImpulseWindow : Window
     {
         private readonly NKM _graph;
-        private List<VertexImpulseRow> _rows = new List<VertexImpulseRow>();
+        private readonly List<VertexImpulseRow> _rows;
         private SimulationResult _lastResult;
-
         private readonly Brush[] _palette = new Brush[]
         {
             Brushes.Blue, Brushes.Red, Brushes.Green, Brushes.Orange, Brushes.Purple,
             Brushes.Brown, Brushes.Magenta, Brushes.Cyan, Brushes.LimeGreen, Brushes.DarkGoldenrod
         };
 
-        public ImpulseWindow(NKM graph)
+        public ImpulseWindow(List<VertexImpulseRow> rows, NKM graph)
         {
             InitializeComponent();
+
+            _rows = rows ?? throw new ArgumentNullException(nameof(rows));
             _graph = graph ?? throw new ArgumentNullException(nameof(graph));
-            InitImpulseList();
         }
-
-        private void InitImpulseList()
-        {
-            _rows.Clear();
-            foreach (var v in _graph.Vertices)
-            {
-                _rows.Add(new VertexImpulseRow { Vertex = v, Name = v.Name, Impulse = "0.0", IsVisible = false }); // true чтоб показать все
-            }
-            ImpulsesList.ItemsSource = _rows;
-        }
-
 
         private void BtnRun_Click(object sender, RoutedEventArgs e)
         {
@@ -463,9 +521,8 @@ namespace NKM1.Impulse
             var errors = new StringBuilder();
             foreach (var r in _rows)
             {
-                var s = (r.Impulse ?? "").Trim();
-                if (string.IsNullOrEmpty(s) || s == "0" || s == "0.0" || s == "0,0")
-                    continue; // нулевой импульс — пропускаем
+                var s = (r?.Impulse ?? "").Trim();
+                if (string.IsNullOrEmpty(s) || s == "0" || s == "0.0" || s == "0,0") continue;
                 if (TryParseDoubleFlexible(s, out var val))
                 {
                     P0[r.Vertex] = val;
@@ -486,13 +543,11 @@ namespace NKM1.Impulse
             DrawResult(_lastResult);
         }
 
-
         private void DrawResult(SimulationResult res)
         {
             PlotCanvas.Children.Clear();
             if (res == null || res.ValuesByStep.Count == 0) return;
-
-            int stepsCount = res.ValuesByStep.Count; // t = 0..steps
+            int stepsCount = res.ValuesByStep.Count;
             int nAll = res.VertexNames.Count;
             if (nAll == 0) return;
 
@@ -505,13 +560,12 @@ namespace NKM1.Impulse
                 fullSeries.Add(arr);
             }
 
-            // подготовим список видимых рядов по порядку строк _rows (чтобы совпадать по именам)
-            var visibleRows = _rows.ToList(); // порядок как в UI
-                                              // но нам нужен набор индексов тех рядов, которые видимы и присутствуют в res.VertexNames
+            // подготовим список видимых рядов по порядку строк _rows
             var visiblePairs = new List<(VertexImpulseRow row, int indexInResult)>();
             var nameToIndex = new Dictionary<string, int>(StringComparer.Ordinal);
             for (int i = 0; i < res.VertexNames.Count; i++) nameToIndex[res.VertexNames[i]] = i;
-            foreach (var row in visibleRows)
+
+            foreach (var row in _rows)
             {
                 if (!row.IsVisible) continue;
                 if (row == null) continue;
@@ -519,29 +573,23 @@ namespace NKM1.Impulse
                 visiblePairs.Add((row, idx));
             }
 
-            // compute min/max across all series (including hidden ones — simulation unchanged)
             double dataMin = fullSeries.SelectMany(a => a).Min();
             double dataMax = fullSeries.SelectMany(a => a).Max();
             if (dataMin == dataMax) { dataMin -= 0.5; dataMax += 0.5; }
 
-            // layout constants
             double leftMargin = 70;
             double rightMargin = 30;
-            double bottomMargin = 70;
+            double bottomMargin = 70; 
             double topMargin = 20;
-
             double wPerStep = Math.Max(24, 40.0);
             double canvasWidth = leftMargin + wPerStep * Math.Max(1, stepsCount - 1) + rightMargin;
             double canvasHeight = Math.Max(300, Math.Min(1200, 450));
-
             PlotCanvas.Width = canvasWidth;
             PlotCanvas.Height = canvasHeight;
-
             double plotLeft = leftMargin;
             double plotRight = canvasWidth - rightMargin;
             double plotTop = topMargin;
             double plotBottom = canvasHeight - bottomMargin;
-
             double ymin = dataMin;
             double ymax = dataMax;
 
@@ -552,43 +600,30 @@ namespace NKM1.Impulse
                 return plotBottom - norm * (plotBottom - plotTop);
             };
 
-            // vertical axis and horizontal axis
-            (double tickStart, double tickStep, int tickCount) = CalculateNiceTicks(ymin, ymax, 6);
+            // vertical & horizontal axes
+            var (tickStart, tickStep, tickCount) = CalculateNiceTicks(ymin, ymax, 6);
 
             var vAxis = new Line { X1 = plotLeft, Y1 = plotTop, X2 = plotLeft, Y2 = plotBottom, Stroke = Brushes.Black, StrokeThickness = 1.2 };
             PlotCanvas.Children.Add(vAxis);
             var hAxis = new Line { X1 = plotLeft, Y1 = plotBottom, X2 = plotRight, Y2 = plotBottom, Stroke = Brushes.Black, StrokeThickness = 1.0 };
             PlotCanvas.Children.Add(hAxis);
 
-            // draw Y ticks and grid
             for (int k = 0; k < tickCount; k++)
             {
                 double val = tickStart + k * tickStep;
                 double y = valueToY(val);
-
                 var tick = new Line { X1 = plotLeft - 6, Y1 = y, X2 = plotLeft, Y2 = y, Stroke = Brushes.Black, StrokeThickness = 1 };
                 PlotCanvas.Children.Add(tick);
-
                 string labelText = FormatNiceNumber(val, tickStep);
                 var lbl = new TextBlock { Text = labelText, FontSize = 11 };
                 Canvas.SetLeft(lbl, plotLeft - 10 - MeasureTextWidth(labelText, lbl.FontSize));
                 Canvas.SetTop(lbl, y - 10);
                 PlotCanvas.Children.Add(lbl);
-
-                var grid = new Line
-                {
-                    X1 = plotLeft,
-                    Y1 = y,
-                    X2 = plotRight,
-                    Y2 = y,
-                    Stroke = Brushes.LightGray,
-                    StrokeThickness = 0.6,
-                    StrokeDashArray = new DoubleCollection() { 2, 3 }
-                };
+                var grid = new Line { X1 = plotLeft, Y1 = y, X2 = plotRight, Y2 = y, Stroke = Brushes.LightGray, StrokeThickness = 0.6, StrokeDashArray = new DoubleCollection() { 2, 3 } };
                 PlotCanvas.Children.Add(grid);
             }
 
-            // Теперь рисуем только видимые серии; сохраним соответствие name -> poly
+            // draw visible series
             var nameToPolyline = new Dictionary<string, Polyline>(StringComparer.Ordinal);
             for (int i = 0; i < visiblePairs.Count; i++)
             {
@@ -605,24 +640,21 @@ namespace NKM1.Impulse
                 nameToPolyline[pair.row.Name] = poly;
             }
 
-            // легенда / подписи справа: используем порядок visiblePairs, но подпись кликом переключает и чекбокс
+            // легенда / подписи справа (кликабельно)
             for (int i = 0; i < visiblePairs.Count; i++)
             {
                 var pair = visiblePairs[i];
                 var name = pair.row.Name;
                 var poly = nameToPolyline.ContainsKey(name) ? nameToPolyline[name] : null;
-
                 var txt = new TextBlock { Text = name, Foreground = _palette[i % _palette.Length], FontSize = 12, Cursor = Cursors.Hand };
                 Canvas.SetLeft(txt, plotRight + 6);
                 Canvas.SetTop(txt, 8 + i * 18);
                 txt.MouseLeftButtonDown += (s, e) =>
                 {
-                    // toggle visibility: both poly and row.IsVisible
                     if (poly != null)
                     {
                         var now = poly.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
                         poly.Visibility = now;
-                        // find row and set IsVisible accordingly (will update checkbox via binding)
                         var r = _rows.FirstOrDefault(rr => rr.Name == name);
                         if (r != null) r.IsVisible = (now == Visibility.Visible);
                     }
@@ -630,20 +662,19 @@ namespace NKM1.Impulse
                 PlotCanvas.Children.Add(txt);
             }
 
-            // X axis: label all integer steps
+            // X axis labels
             for (int t = 0; t < stepsCount; t++)
             {
                 double x = plotLeft + t * wPerStep;
                 var tick = new Line { X1 = x, Y1 = plotBottom, X2 = x, Y2 = plotBottom + 6, Stroke = Brushes.Black, StrokeThickness = 0.8 };
                 PlotCanvas.Children.Add(tick);
-
                 var lbl = new TextBlock { Text = t.ToString(System.Globalization.CultureInfo.InvariantCulture), FontSize = 10 };
                 Canvas.SetLeft(lbl, x - 6);
                 Canvas.SetTop(lbl, plotBottom + 8);
                 PlotCanvas.Children.Add(lbl);
             }
 
-            // -- helper local functions reused from previous implementation --
+            // локальные вспомогательные функции
             static (double start, double step, int count) CalculateNiceTicks(double min, double max, int maxTicks)
             {
                 if (max <= min) return (min, 1.0, 2);
@@ -654,6 +685,7 @@ namespace NKM1.Impulse
                 int count = (int)Math.Round((end - start) / step) + 1;
                 return (start, step, count);
             }
+
             static double NiceNum(double x, bool round)
             {
                 double exp = Math.Floor(Math.Log10(x));
@@ -675,33 +707,37 @@ namespace NKM1.Impulse
                 }
                 return nf * Math.Pow(10, exp);
             }
+
             static string FormatNiceNumber(double value, double tickStep)
             {
                 int decimals = 0;
                 if (tickStep < 1)
                 {
                     double tmp = tickStep;
-                    while (Math.Abs(Math.Round(tmp) - tmp) > 1e-12 && decimals < 10) { tmp *= 10; decimals++; }
+                    while (Math.Abs(Math.Round(tmp) - tmp) > 1e-12 && decimals < 10)
+                    {
+                        tmp *= 10; decimals++;
+                    }
                 }
                 decimals = Math.Min(decimals, 6);
                 return value.ToString("F" + decimals, System.Globalization.CultureInfo.InvariantCulture);
             }
+
             double MeasureTextWidth(string text, double fontSize) => text.Length * (fontSize * 0.56);
         }
 
-
-
-
         private void BtnExportCsv_Click(object sender, RoutedEventArgs e)
         {
-            if (_lastResult == null) { MessageBox.Show("Нечего экспортировать — сначала выполните моделирование."); return; }
+            if (_lastResult == null)
+            {
+                MessageBox.Show("Нечего экспортировать — сначала выполните моделирование.");
+                return;
+            }
 
             var sb = new StringBuilder();
-            // header: step, v1, v2, ...
             sb.Append("step");
             foreach (var name in _lastResult.VertexNames) sb.Append($";{EscapeCsv(name)}");
             sb.AppendLine();
-
             for (int t = 0; t < _lastResult.ValuesByStep.Count; t++)
             {
                 sb.Append(t);
@@ -724,62 +760,63 @@ namespace NKM1.Impulse
 
         private string EscapeCsv(string s) => s?.Replace("\"", "\"\"") ?? "";
 
-        private class VertexImpulseRow : INotifyPropertyChanged
-        {
-            public Factor Vertex { get; set; }
-
-            private string _name;
-            public string Name
-            {
-                get => _name;
-                set { _name = value; OnPropertyChanged(); }
-            }
-
-            private string _impulse;
-            public string Impulse
-            {
-                get => _impulse;
-                set { _impulse = value; OnPropertyChanged(); }
-            }
-
-            private bool _isVisible = true;
-            public bool IsVisible
-            {
-                get => _isVisible;
-                set { _isVisible = value; OnPropertyChanged(); }
-            }
-
-            public event PropertyChangedEventHandler PropertyChanged;
-            private void OnPropertyChanged([System.Runtime.CompilerServices.CallerMemberName] string propName = null)
-            {
-                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propName));
-            }
-        }
-
-
         private bool TryParseDoubleFlexible(string s, out double value)
         {
             value = 0.0;
             if (string.IsNullOrWhiteSpace(s)) return false;
-
-            if (double.TryParse(s, System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands,
-                System.Globalization.CultureInfo.CurrentCulture, out value)) return true;
-
+            if (double.TryParse(s, System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands, System.Globalization.CultureInfo.CurrentCulture, out value)) return true;
             var alt = s.Replace(',', '.');
-            if (double.TryParse(alt, System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands,
-                System.Globalization.CultureInfo.InvariantCulture, out value)) return true;
-
+            if (double.TryParse(alt, System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands, System.Globalization.CultureInfo.InvariantCulture, out value)) return true;
             var trimmed = s.Replace(" ", "");
-            if (double.TryParse(trimmed, System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands,
-                System.Globalization.CultureInfo.CurrentCulture, out value)) return true;
-
-            // не получилось
+            if (double.TryParse(trimmed, System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands, System.Globalization.CultureInfo.CurrentCulture, out value)) return true;
             return false;
         }
-
-
     }
+}
 
+--------------------------------------------------------------------------------
+
+VertexImpulseRow.cs
+
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+using NKM1.Models;
+
+namespace NKM1.Impulse
+{
+    /// <summary>
+    /// Модель строки "импульс для вершины".
+    /// Вынесена в отдельный файл как требовалось.
+    /// </summary>
+    public class VertexImpulseRow : INotifyPropertyChanged
+    {
+        public Factor Vertex { get; set; }
+
+        private string _name;
+        public string Name
+        {
+            get => _name;
+            set { _name = value; OnPropertyChanged(); }
+        }
+
+        private string _impulse;
+        public string Impulse
+        {
+            get => _impulse;
+            set { _impulse = value; OnPropertyChanged(); }
+        }
+
+        private bool _isVisible = true;
+        public bool IsVisible
+        {
+            get => _isVisible;
+            set { _isVisible = value; OnPropertyChanged(); }
+        }
+
+        public event PropertyChangedEventHandler PropertyChanged;
+        private void OnPropertyChanged([CallerMemberName] string propName = null)
+            => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propName));
+    }
 }
 
 --------------------------------------------------------------------------------
@@ -922,7 +959,7 @@ public class CycleInfo
     public override string ToString()
     {
         var sign = IsPositive ? "Положительный" : "Отрицательный ";
-        return $"({sign}) {string.Join(" -> ", Vertices.Select(v => v.Name))}";
+        return $"({sign}) [{string.Join("] -> [", Vertices.Select(v => v.Name))}]";
     }
 }
 --------------------------------------------------------------------------------
@@ -1886,7 +1923,8 @@ public partial class StructureAnalizys : Window
             var eigenvalues = GraphMatrixAnalyzer.ComputeEigenvalues(matrix);
             var maxEigen = GraphMatrixAnalyzer.GetMaxEigenvalueByMagnitude(eigenvalues);
 
-            builder.AppendLine("СТРУКТУРНЫЙ АНАЛИЗ НКМ");
+            builder.AppendLine("[АНАЛИЗ СТРУКТУРНОЙ УСТРОЙЧИВОСТИ]");
+            builder.AppendLine("----------------------------------");
             builder.AppendLine();
 
             builder.AppendLine($"Факторов: {factors}");
@@ -1902,26 +1940,32 @@ public partial class StructureAnalizys : Window
                 builder.AppendLine($"Цикл {i}: {cycles[i].ToString()} ");
             }
             builder.AppendLine();
-            builder.AppendLine("Вывод: ");
+            builder.AppendLine("ВЫВОД: ");
             builder.AppendLine(cycles.Count(c => !c.IsPositive) % 2 == 0 ? "НКМ структурно не устойчива" : "НКМ структурно устойчива");
+            builder.AppendLine();
 
-            // builder.AppendLine("Собственные числа:");
-            // foreach (var e in eigenvalues)
-            //     builder.AppendLine($"λ = {e.Real:F3} {(e.Imaginary >= 0 ? "+" : "-")} {Math.Abs(e.Imaginary):F3}i");
+            builder.AppendLine("[АНАЛИЗ УСТОЙЧИВОСТИ ПО ВОЗМУЩЕНИЮ, ПО НАЧАЛЬНОМУ ЗНАЧЕНИЮ]");
+            builder.AppendLine("-----------------------------------------------------------");
 
-            // builder.AppendLine($"\nМаксимальное по модулю собственное число: |λmax| = {maxEigen.Magnitude:F3}");
+            builder.AppendLine("Собственные числа:");
+            int j = 0;
+            foreach (var e in eigenvalues)
+            {
+                builder.Append($"λ_{++j} = {e.Real:F3} ");
+                if (e.Imaginary != 0)
+                    builder.Append($"{(e.Imaginary >= 0 ? "+" : "-")} {Math.Abs(e.Imaginary):F3}i");
+                builder.AppendLine();
+            }
 
-            // foreach (var cycle in cycles)
-            // {
-            //     builder.Append($"{(cycle.IsPositive ? "+" : "-")} ");
-            //     foreach (var v in cycle.Vertices)
-            //     {
-            //         builder.Append($"{v.Name} -> ");
-            //     }
-            //     builder.AppendLine();
-            // }
+            builder.AppendLine();
+
+            builder.AppendLine($"Максимальное по модулю собственное число: |λmax| = {maxEigen.Magnitude:F3}");
+            builder.AppendLine();
+
+            builder.AppendLine("ВЫВОД: ");
+            builder.AppendLine(maxEigen.Magnitude < 1 ? "НКМ устойчива по возмущению, по начальному значению." : "НКМ не устойчива по возмущению, по начальному значению");
+            builder.AppendLine();
             Result.Text = builder.ToString();
-            // GraphMatrixAnalyzer.ExampleUsage(nkm);
         }
     }
 }
@@ -1943,6 +1987,7 @@ App.g.cs
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
 //
 //     Changes to this file may cause incorrect behavior and will be lost if
 //     the code is regenerated.
@@ -2224,7 +2269,7 @@ namespace XamlGeneratedNamespace {
 
 MainWindow.g.cs
 
-#pragma checksum "..\..\..\MainWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "49B3DADA4F16541E7A029042BECCCF5E23380C92"
+#pragma checksum "..\..\..\MainWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "14FBF5C3382020F50435C11691D79B9A3CC46311"
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
@@ -2312,7 +2357,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 32 "..\..\..\MainWindow.xaml"
+        #line 31 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal GraphX.Controls.ZoomControl ZoomCtrl;
         
@@ -2320,7 +2365,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 33 "..\..\..\MainWindow.xaml"
+        #line 32 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal NKM1.Visual.DataGraphArea graphArea;
         
@@ -2328,7 +2373,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 40 "..\..\..\MainWindow.xaml"
+        #line 38 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.ListBox LstVertices;
         
@@ -2336,7 +2381,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 44 "..\..\..\MainWindow.xaml"
+        #line 42 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnAddVertex;
         
@@ -2344,7 +2389,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 46 "..\..\..\MainWindow.xaml"
+        #line 44 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnRemoveVertex;
         
@@ -2352,7 +2397,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 48 "..\..\..\MainWindow.xaml"
+        #line 46 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnSetVertexName;
         
@@ -2360,7 +2405,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 53 "..\..\..\MainWindow.xaml"
+        #line 51 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.ListBox LstEdges;
         
@@ -2368,7 +2413,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 55 "..\..\..\MainWindow.xaml"
+        #line 53 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnAddEdge;
         
@@ -2376,7 +2421,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 56 "..\..\..\MainWindow.xaml"
+        #line 54 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnRemoveEdge;
         
@@ -2384,9 +2429,17 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 57 "..\..\..\MainWindow.xaml"
+        #line 55 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnSetWeight;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 61 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.ItemsControl ImpulsesList;
         
         #line default
         #line hidden
@@ -2478,7 +2531,7 @@ namespace NKM1 {
             case 9:
             this.BtnAddVertex = ((System.Windows.Controls.Button)(target));
             
-            #line 44 "..\..\..\MainWindow.xaml"
+            #line 42 "..\..\..\MainWindow.xaml"
             this.BtnAddVertex.Click += new System.Windows.RoutedEventHandler(this.BtnAddVertex_Click);
             
             #line default
@@ -2487,7 +2540,7 @@ namespace NKM1 {
             case 10:
             this.BtnRemoveVertex = ((System.Windows.Controls.Button)(target));
             
-            #line 46 "..\..\..\MainWindow.xaml"
+            #line 44 "..\..\..\MainWindow.xaml"
             this.BtnRemoveVertex.Click += new System.Windows.RoutedEventHandler(this.BtnRemoveVertex_Click);
             
             #line default
@@ -2496,7 +2549,7 @@ namespace NKM1 {
             case 11:
             this.BtnSetVertexName = ((System.Windows.Controls.Button)(target));
             
-            #line 48 "..\..\..\MainWindow.xaml"
+            #line 46 "..\..\..\MainWindow.xaml"
             this.BtnSetVertexName.Click += new System.Windows.RoutedEventHandler(this.BtnSetVertexName_Click);
             
             #line default
@@ -2508,7 +2561,7 @@ namespace NKM1 {
             case 13:
             this.BtnAddEdge = ((System.Windows.Controls.Button)(target));
             
-            #line 55 "..\..\..\MainWindow.xaml"
+            #line 53 "..\..\..\MainWindow.xaml"
             this.BtnAddEdge.Click += new System.Windows.RoutedEventHandler(this.BtnAddEdge_Click);
             
             #line default
@@ -2517,7 +2570,7 @@ namespace NKM1 {
             case 14:
             this.BtnRemoveEdge = ((System.Windows.Controls.Button)(target));
             
-            #line 56 "..\..\..\MainWindow.xaml"
+            #line 54 "..\..\..\MainWindow.xaml"
             this.BtnRemoveEdge.Click += new System.Windows.RoutedEventHandler(this.BtnRemoveEdge_Click);
             
             #line default
@@ -2526,11 +2579,14 @@ namespace NKM1 {
             case 15:
             this.BtnSetWeight = ((System.Windows.Controls.Button)(target));
             
-            #line 57 "..\..\..\MainWindow.xaml"
+            #line 55 "..\..\..\MainWindow.xaml"
             this.BtnSetWeight.Click += new System.Windows.RoutedEventHandler(this.BtnSetWeight_Click);
             
             #line default
             #line hidden
+            return;
+            case 16:
+            this.ImpulsesList = ((System.Windows.Controls.ItemsControl)(target));
             return;
             }
             this._contentLoaded = true;
@@ -2543,7 +2599,7 @@ namespace NKM1 {
 
 MainWindow.g.i.cs
 
-#pragma checksum "..\..\..\MainWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "49B3DADA4F16541E7A029042BECCCF5E23380C92"
+#pragma checksum "..\..\..\MainWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "14FBF5C3382020F50435C11691D79B9A3CC46311"
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
@@ -2631,7 +2687,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 32 "..\..\..\MainWindow.xaml"
+        #line 31 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal GraphX.Controls.ZoomControl ZoomCtrl;
         
@@ -2639,7 +2695,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 33 "..\..\..\MainWindow.xaml"
+        #line 32 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal NKM1.Visual.DataGraphArea graphArea;
         
@@ -2647,7 +2703,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 40 "..\..\..\MainWindow.xaml"
+        #line 38 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.ListBox LstVertices;
         
@@ -2655,7 +2711,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 44 "..\..\..\MainWindow.xaml"
+        #line 42 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnAddVertex;
         
@@ -2663,7 +2719,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 46 "..\..\..\MainWindow.xaml"
+        #line 44 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnRemoveVertex;
         
@@ -2671,7 +2727,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 48 "..\..\..\MainWindow.xaml"
+        #line 46 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnSetVertexName;
         
@@ -2679,7 +2735,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 53 "..\..\..\MainWindow.xaml"
+        #line 51 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.ListBox LstEdges;
         
@@ -2687,7 +2743,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 55 "..\..\..\MainWindow.xaml"
+        #line 53 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnAddEdge;
         
@@ -2695,7 +2751,7 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 56 "..\..\..\MainWindow.xaml"
+        #line 54 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnRemoveEdge;
         
@@ -2703,9 +2759,17 @@ namespace NKM1 {
         #line hidden
         
         
-        #line 57 "..\..\..\MainWindow.xaml"
+        #line 55 "..\..\..\MainWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnSetWeight;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 61 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.ItemsControl ImpulsesList;
         
         #line default
         #line hidden
@@ -2797,7 +2861,7 @@ namespace NKM1 {
             case 9:
             this.BtnAddVertex = ((System.Windows.Controls.Button)(target));
             
-            #line 44 "..\..\..\MainWindow.xaml"
+            #line 42 "..\..\..\MainWindow.xaml"
             this.BtnAddVertex.Click += new System.Windows.RoutedEventHandler(this.BtnAddVertex_Click);
             
             #line default
@@ -2806,7 +2870,7 @@ namespace NKM1 {
             case 10:
             this.BtnRemoveVertex = ((System.Windows.Controls.Button)(target));
             
-            #line 46 "..\..\..\MainWindow.xaml"
+            #line 44 "..\..\..\MainWindow.xaml"
             this.BtnRemoveVertex.Click += new System.Windows.RoutedEventHandler(this.BtnRemoveVertex_Click);
             
             #line default
@@ -2815,7 +2879,7 @@ namespace NKM1 {
             case 11:
             this.BtnSetVertexName = ((System.Windows.Controls.Button)(target));
             
-            #line 48 "..\..\..\MainWindow.xaml"
+            #line 46 "..\..\..\MainWindow.xaml"
             this.BtnSetVertexName.Click += new System.Windows.RoutedEventHandler(this.BtnSetVertexName_Click);
             
             #line default
@@ -2827,7 +2891,7 @@ namespace NKM1 {
             case 13:
             this.BtnAddEdge = ((System.Windows.Controls.Button)(target));
             
-            #line 55 "..\..\..\MainWindow.xaml"
+            #line 53 "..\..\..\MainWindow.xaml"
             this.BtnAddEdge.Click += new System.Windows.RoutedEventHandler(this.BtnAddEdge_Click);
             
             #line default
@@ -2836,7 +2900,7 @@ namespace NKM1 {
             case 14:
             this.BtnRemoveEdge = ((System.Windows.Controls.Button)(target));
             
-            #line 56 "..\..\..\MainWindow.xaml"
+            #line 54 "..\..\..\MainWindow.xaml"
             this.BtnRemoveEdge.Click += new System.Windows.RoutedEventHandler(this.BtnRemoveEdge_Click);
             
             #line default
@@ -2845,11 +2909,14 @@ namespace NKM1 {
             case 15:
             this.BtnSetWeight = ((System.Windows.Controls.Button)(target));
             
-            #line 57 "..\..\..\MainWindow.xaml"
+            #line 55 "..\..\..\MainWindow.xaml"
             this.BtnSetWeight.Click += new System.Windows.RoutedEventHandler(this.BtnSetWeight_Click);
             
             #line default
             #line hidden
+            return;
+            case 16:
+            this.ImpulsesList = ((System.Windows.Controls.ItemsControl)(target));
             return;
             }
             this._contentLoaded = true;
@@ -2865,6 +2932,7 @@ NKM1.AssemblyInfo.cs
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
 //
 //     Changes to this file may cause incorrect behavior and will be lost if
 //     the code is regenerated.
@@ -2877,7 +2945,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7057bfaf053d74e2a8df8bb30763a968b0cc46ba")]
 [assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
 [assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -3062,6 +3130,128 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_0i0ngtu4_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_0i0ngtu4_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_0pujwatg_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_0pujwatg_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_0xoyjuzl_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_0xoyjuzl_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_2chygc2o_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -3093,6 +3283,47 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_2chygc2o_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_2dw4ufdp_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_2dw4ufdp_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -3173,6 +3404,47 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_2ilrrfdx_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_2o53epe2_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_2o53epe2_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -3388,6 +3660,47 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_3coq34aj_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_3coq34aj_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_3fynkeb3_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -3540,6 +3853,47 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_43eilagg_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_43rb3xvb_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_43rb3xvb_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -3712,6 +4066,47 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_4qutx4ae_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_4qutx4ae_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_4ssiwkjq_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -3743,6 +4138,129 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_4ssiwkjq_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_4sslsjq3_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_4sslsjq3_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_4yikr4li_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_4yikr4li_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_4yucwrmo_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_4yucwrmo_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -3834,6 +4352,88 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_bfcsjjnh_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_bfcsjjnh_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_bkodqbv4_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_bkodqbv4_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_bwgwhygb_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -3904,6 +4504,87 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_bylus040_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_c1t0bbg1_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_c1t0bbg1_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_c5gx4b20_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_c5gx4b20_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -3996,6 +4677,47 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_ddec4iuf_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_ddec4iuf_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_dg13iiqd_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -4027,6 +4749,210 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_dg13iiqd_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_dhqwckul_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_dhqwckul_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_drekoclj_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_drekoclj_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_dswbxjc4_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_dswbxjc4_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_eblkgxyt_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_eblkgxyt_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_eeynpe4c_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_eeynpe4c_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -4078,6 +5004,88 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_es5u2qc2_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_es5u2qc2_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_f3hw0cb5_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7057bfaf053d74e2a8df8bb30763a968b0cc46ba")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_f3hw0cb5_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_fesjbytq_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -4109,6 +5117,47 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_fesjbytq_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_frxiyfy4_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7057bfaf053d74e2a8df8bb30763a968b0cc46ba")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_frxiyfy4_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -4352,6 +5401,46 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_gi0ne1sp_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_glshbc5y_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_glshbc5y_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -4648,6 +5737,88 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_ifbum5iu_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7057bfaf053d74e2a8df8bb30763a968b0cc46ba")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_ifbum5iu_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_igf2r4nw_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_igf2r4nw_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_in2xgiov_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -4718,6 +5889,88 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_irnfmq2v_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_irwxkvkx_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_irwxkvkx_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_iva0xqc1_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_iva0xqc1_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -4841,6 +6094,88 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_ja2is021_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_jclv1iqn_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7057bfaf053d74e2a8df8bb30763a968b0cc46ba")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_jclv1iqn_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_juuv4e2f_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_juuv4e2f_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -5044,6 +6379,47 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_l2sxy5kz_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_lad15oyy_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_lad15oyy_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -5419,6 +6795,47 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_nermlacy_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7057bfaf053d74e2a8df8bb30763a968b0cc46ba")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_nermlacy_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_nf521mkt_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -5460,6 +6877,47 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_nln0dx1p_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7057bfaf053d74e2a8df8bb30763a968b0cc46ba")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_nln0dx1p_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_odqswekk_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -5490,6 +6948,47 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_odqswekk_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_ox3iva34_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_ox3iva34_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -5582,6 +7081,88 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_p34cpelr_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_p34cpelr_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_pa4ejdxe_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_pa4ejdxe_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_pdj1q0cp_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -5622,6 +7203,47 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_ptyk1hav_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_ptyk1hav_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_qvogsofz_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -5652,6 +7274,88 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_qvogsofz_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_qx4d530g_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7057bfaf053d74e2a8df8bb30763a968b0cc46ba")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_qx4d530g_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_rcsfidar_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_rcsfidar_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -5866,6 +7570,47 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_svlstlp5_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_svlstlp5_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_swozc2jt_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -5986,6 +7731,46 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_tephh1zl_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_tephh1zl_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_tw4tadvk_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -6017,6 +7802,47 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_tw4tadvk_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_u2uy3ukp_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_u2uy3ukp_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -6231,6 +8057,47 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_uu43zfft_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_uu43zfft_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_uvfukf4b_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -6272,6 +8139,47 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_v2zzpv31_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_v2zzpv31_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_v5ytz1qb_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -6303,6 +8211,47 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_v5ytz1qb_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_vbq552zv_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_vbq552zv_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -6394,6 +8343,87 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_w5epltjm_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_w5epltjm_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_wjg5kxum_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_wjg5kxum_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_wjle2yez_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -6425,6 +8455,47 @@ using System.Reflection;
 --------------------------------------------------------------------------------
 
 NKM1_wjle2yez_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_wq2ercae_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_wq2ercae_wpftmp.GlobalUsings.g.cs
 
 // <auto-generated/>
 global using global::System;
@@ -6757,6 +8828,47 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_z5aiwfen_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_z5aiwfen_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_zat0etyv_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -6838,6 +8950,47 @@ global using global::System.Threading.Tasks;
 
 --------------------------------------------------------------------------------
 
+NKM1_zdaz5nrt_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c88e39ea4a151a35abde22993f0b30447340bd8")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_zdaz5nrt_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
 NKM1_zkpedbcm_wpftmp.AssemblyInfo.cs
 
 //------------------------------------------------------------------------------
@@ -6881,7 +9034,7 @@ global using global::System.Threading.Tasks;
 
 ImpulseWindow.g.cs
 
-#pragma checksum "..\..\..\..\Impulse\ImpulseWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "4A6CD7070C0E59E2F8CAA83EED533F2A283D2F96"
+#pragma checksum "..\..\..\..\Impulse\ImpulseWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "9CFEDA43EA946B266F2D7FC294DB031B5F811673"
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
@@ -6924,7 +9077,7 @@ namespace NKM1.Impulse {
     public partial class ImpulseWindow : System.Windows.Window, System.Windows.Markup.IComponentConnector {
         
         
-        #line 8 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+        #line 13 "..\..\..\..\Impulse\ImpulseWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.TextBox TxtSteps;
         
@@ -6932,7 +9085,7 @@ namespace NKM1.Impulse {
         #line hidden
         
         
-        #line 9 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+        #line 14 "..\..\..\..\Impulse\ImpulseWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnRun;
         
@@ -6940,7 +9093,7 @@ namespace NKM1.Impulse {
         #line hidden
         
         
-        #line 10 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+        #line 15 "..\..\..\..\Impulse\ImpulseWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnExportCsv;
         
@@ -6948,15 +9101,7 @@ namespace NKM1.Impulse {
         #line hidden
         
         
-        #line 26 "..\..\..\..\Impulse\ImpulseWindow.xaml"
-        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
-        internal System.Windows.Controls.ItemsControl ImpulsesList;
-        
-        #line default
-        #line hidden
-        
-        
-        #line 43 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+        #line 19 "..\..\..\..\Impulse\ImpulseWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.ScrollViewer PlotScroll;
         
@@ -6964,7 +9109,7 @@ namespace NKM1.Impulse {
         #line hidden
         
         
-        #line 45 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+        #line 20 "..\..\..\..\Impulse\ImpulseWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Canvas PlotCanvas;
         
@@ -7007,7 +9152,7 @@ namespace NKM1.Impulse {
             case 2:
             this.BtnRun = ((System.Windows.Controls.Button)(target));
             
-            #line 9 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+            #line 14 "..\..\..\..\Impulse\ImpulseWindow.xaml"
             this.BtnRun.Click += new System.Windows.RoutedEventHandler(this.BtnRun_Click);
             
             #line default
@@ -7016,19 +9161,16 @@ namespace NKM1.Impulse {
             case 3:
             this.BtnExportCsv = ((System.Windows.Controls.Button)(target));
             
-            #line 10 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+            #line 15 "..\..\..\..\Impulse\ImpulseWindow.xaml"
             this.BtnExportCsv.Click += new System.Windows.RoutedEventHandler(this.BtnExportCsv_Click);
             
             #line default
             #line hidden
             return;
             case 4:
-            this.ImpulsesList = ((System.Windows.Controls.ItemsControl)(target));
-            return;
-            case 5:
             this.PlotScroll = ((System.Windows.Controls.ScrollViewer)(target));
             return;
-            case 6:
+            case 5:
             this.PlotCanvas = ((System.Windows.Controls.Canvas)(target));
             return;
             }
@@ -7042,7 +9184,7 @@ namespace NKM1.Impulse {
 
 ImpulseWindow.g.i.cs
 
-#pragma checksum "..\..\..\..\Impulse\ImpulseWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "4A6CD7070C0E59E2F8CAA83EED533F2A283D2F96"
+#pragma checksum "..\..\..\..\Impulse\ImpulseWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "9CFEDA43EA946B266F2D7FC294DB031B5F811673"
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
@@ -7085,7 +9227,7 @@ namespace NKM1.Impulse {
     public partial class ImpulseWindow : System.Windows.Window, System.Windows.Markup.IComponentConnector {
         
         
-        #line 8 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+        #line 13 "..\..\..\..\Impulse\ImpulseWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.TextBox TxtSteps;
         
@@ -7093,7 +9235,7 @@ namespace NKM1.Impulse {
         #line hidden
         
         
-        #line 9 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+        #line 14 "..\..\..\..\Impulse\ImpulseWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnRun;
         
@@ -7101,7 +9243,7 @@ namespace NKM1.Impulse {
         #line hidden
         
         
-        #line 10 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+        #line 15 "..\..\..\..\Impulse\ImpulseWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Button BtnExportCsv;
         
@@ -7109,15 +9251,7 @@ namespace NKM1.Impulse {
         #line hidden
         
         
-        #line 26 "..\..\..\..\Impulse\ImpulseWindow.xaml"
-        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
-        internal System.Windows.Controls.ItemsControl ImpulsesList;
-        
-        #line default
-        #line hidden
-        
-        
-        #line 43 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+        #line 19 "..\..\..\..\Impulse\ImpulseWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.ScrollViewer PlotScroll;
         
@@ -7125,7 +9259,7 @@ namespace NKM1.Impulse {
         #line hidden
         
         
-        #line 45 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+        #line 20 "..\..\..\..\Impulse\ImpulseWindow.xaml"
         [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
         internal System.Windows.Controls.Canvas PlotCanvas;
         
@@ -7168,7 +9302,7 @@ namespace NKM1.Impulse {
             case 2:
             this.BtnRun = ((System.Windows.Controls.Button)(target));
             
-            #line 9 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+            #line 14 "..\..\..\..\Impulse\ImpulseWindow.xaml"
             this.BtnRun.Click += new System.Windows.RoutedEventHandler(this.BtnRun_Click);
             
             #line default
@@ -7177,19 +9311,16 @@ namespace NKM1.Impulse {
             case 3:
             this.BtnExportCsv = ((System.Windows.Controls.Button)(target));
             
-            #line 10 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+            #line 15 "..\..\..\..\Impulse\ImpulseWindow.xaml"
             this.BtnExportCsv.Click += new System.Windows.RoutedEventHandler(this.BtnExportCsv_Click);
             
             #line default
             #line hidden
             return;
             case 4:
-            this.ImpulsesList = ((System.Windows.Controls.ItemsControl)(target));
-            return;
-            case 5:
             this.PlotScroll = ((System.Windows.Controls.ScrollViewer)(target));
             return;
-            case 6:
+            case 5:
             this.PlotCanvas = ((System.Windows.Controls.Canvas)(target));
             return;
             }
@@ -7288,6 +9419,7 @@ AddEdgeWindow.g.cs
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
 //
 //     Changes to this file may cause incorrect behavior and will be lost if
 //     the code is regenerated.
@@ -7505,7 +9637,7 @@ namespace NKM1.Visual {
                 return;
             }
             _contentLoaded = true;
-            System.Uri resourceLocater = new System.Uri("/NKM1;V1.0.0.0;component/visual/addedgewindow.xaml", System.UriKind.Relative);
+            System.Uri resourceLocater = new System.Uri("/NKM1;component/visual/addedgewindow.xaml", System.UriKind.Relative);
             
             #line 1 "..\..\..\..\Visual\AddEdgeWindow.xaml"
             System.Windows.Application.LoadComponent(this, resourceLocater);
@@ -7777,7 +9909,7 @@ namespace NKM1.Visual {
                 return;
             }
             _contentLoaded = true;
-            System.Uri resourceLocater = new System.Uri("/NKM1;V1.0.0.0;component/visual/addvertexwindow.xaml", System.UriKind.Relative);
+            System.Uri resourceLocater = new System.Uri("/NKM1;component/visual/addvertexwindow.xaml", System.UriKind.Relative);
             
             #line 1 "..\..\..\..\Visual\AddVertexWindow.xaml"
             System.Windows.Application.LoadComponent(this, resourceLocater);
@@ -7831,6 +9963,7 @@ EditEdgeWindow.g.cs
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
 //
 //     Changes to this file may cause incorrect behavior and will be lost if
 //     the code is regenerated.
@@ -8048,7 +10181,7 @@ namespace NKM1.Visual {
                 return;
             }
             _contentLoaded = true;
-            System.Uri resourceLocater = new System.Uri("/NKM1;V1.0.0.0;component/visual/editedgewindow.xaml", System.UriKind.Relative);
+            System.Uri resourceLocater = new System.Uri("/NKM1;component/visual/editedgewindow.xaml", System.UriKind.Relative);
             
             #line 1 "..\..\..\..\Visual\EditEdgeWindow.xaml"
             System.Windows.Application.LoadComponent(this, resourceLocater);
@@ -8392,10 +10525,11 @@ namespace NKM1.Visual {
 
 StructureAnalizys.g.cs
 
-#pragma checksum "..\..\..\..\Visual\StructureAnalizys.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "B3893FDA6F1ABF4DA02E50A0CA2E92AF5DC97934"
+#pragma checksum "..\..\..\..\Visual\StructureAnalizys.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "632E3A70AF415A6DB0D9C1E6E3B3414721570DBC"
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
 //
 //     Changes to this file may cause incorrect behavior and will be lost if
 //     the code is regenerated.
@@ -8485,7 +10619,7 @@ namespace NKM1.Visual {
 
 StructureAnalizys.g.i.cs
 
-#pragma checksum "..\..\..\..\Visual\StructureAnalizys.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "B3893FDA6F1ABF4DA02E50A0CA2E92AF5DC97934"
+#pragma checksum "..\..\..\..\Visual\StructureAnalizys.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "632E3A70AF415A6DB0D9C1E6E3B3414721570DBC"
 //------------------------------------------------------------------------------
 // <auto-generated>
 //     This code was generated by a tool.
@@ -8547,7 +10681,7 @@ namespace NKM1.Visual {
                 return;
             }
             _contentLoaded = true;
-            System.Uri resourceLocater = new System.Uri("/NKM1;V1.0.0.0;component/visual/structureanalizys.xaml", System.UriKind.Relative);
+            System.Uri resourceLocater = new System.Uri("/NKM1;component/visual/structureanalizys.xaml", System.UriKind.Relative);
             
             #line 1 "..\..\..\..\Visual\StructureAnalizys.xaml"
             System.Windows.Application.LoadComponent(this, resourceLocater);
@@ -8611,25 +10745,23 @@ MainWindow.xaml
             <Separator />
             <Button Name="BtnLayout" Click="BtnLayout_Click">Выравнять</Button>
 			<Separator />
-			<Button Name="BtnCycle" Click="BtnCycle_Click">Циклы</Button>
+            <Button Name="BtnCycle" Click="BtnCycle_Click">Структурный анализ</Button>
 			<Separator />
-            <Button Name="BtnImpulse" Click="BtnImpulse_Click">Импульсы</Button>
+            <Button Name="BtnImpulse" Click="BtnImpulse_Click">Импульсное моделирование</Button>
         </ToolBar>
 
 
-        <Grid>
-            <Grid.ColumnDefinitions>
+    <Grid>
+        <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="3*" />
                 <ColumnDefinition Width="1*" />
-            </Grid.ColumnDefinitions>
+        </Grid.ColumnDefinitions>
 
-            <!-- Используем один ZoomControl как хост для GraphArea (GraphArea создаём в коде) -->
             <controls:ZoomControl x:Name="ZoomCtrl" Grid.Column="0" Background="LightGray" >
 				<visual:DataGraphArea x:Name="graphArea"/>
             </controls:ZoomControl>
 
 
-            <!-- Правая панель: списки и свойства -->
             <StackPanel Grid.Column="1" Margin="8">
                 <TextBlock FontWeight="Bold">Факторы</TextBlock>
                 <ListBox Name="LstVertices" Height="220" SelectionMode="Extended" />
@@ -8641,7 +10773,7 @@ MainWindow.xaml
                     <Button Name="BtnRemoveVertex" Click="BtnRemoveVertex_Click" Margin="4,0,0,0">Удалить</Button>
                     <Separator />
                     <Button Name="BtnSetVertexName" Click="BtnSetVertexName_Click" Margin="4,0,0,0">Изменить</Button>
-                </StackPanel>
+            </StackPanel>
 
 
                 <TextBlock FontWeight="Bold" Margin="0,8,0,0">Связи</TextBlock>
@@ -8650,11 +10782,27 @@ MainWindow.xaml
                     <Button Name="BtnAddEdge" Margin="4,0,0,0" Click="BtnAddEdge_Click">Добавить</Button>
                     <Button Name="BtnRemoveEdge" Margin="4,0,0,0" Click="BtnRemoveEdge_Click">Удалить</Button>
                     <Button Name="BtnSetWeight" Click="BtnSetWeight_Click" Margin="4,0,0,0">Изменить</Button>
-                </StackPanel>
-
-
             </StackPanel>
-        </Grid>
+
+            <TextBlock Text="Вектор начальных импульсов" FontWeight="Bold" Margin="0,8,0,4"/>
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto"  >
+                <ItemsControl x:Name="ImpulsesList">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <DockPanel Margin="2">
+                                <CheckBox IsChecked="{Binding IsVisible}" VerticalAlignment="Center" Margin="4"/>
+                                <TextBlock Text="{Binding Name}" Width="220" VerticalAlignment="Center" Margin="4"/>
+                                <TextBox Text="{Binding Impulse, UpdateSourceTrigger=PropertyChanged}" Width="80" Margin="4"/>
+                            </DockPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+                
+            <StackPanel Height="8"/>
+        </StackPanel>
+    </Grid>
     </DockPanel>
 </Window>
 
@@ -8665,53 +10813,25 @@ ImpulseWindow.xaml
 <Window x:Class="NKM1.Impulse.ImpulseWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Impulse simulator" Height="700" Width="1000">
-    <DockPanel Margin="6">
+        Title="Impulse" Height="600" Width="1000">
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" VerticalAlignment="Top" Margin="0,0,0,6">
             <TextBlock VerticalAlignment="Center" Text="Шаги:" Margin="0,0,6,0"/>
             <TextBox Name="TxtSteps" Width="80" Text="20" Margin="0,0,12,0"/>
-            <Button Name="BtnRun" Click="BtnRun_Click" Width="100" Margin="0,0,8,0">Run</Button>
-            <Button Name="BtnExportCsv" Click="BtnExportCsv_Click" Width="120">Export CSV</Button>
-            <TextBlock Text=" " Width="12"/>
-            <TextBlock VerticalAlignment="Center" Text="Легенда (кликайте для скрытия/показа):" />
+            <Button Name="BtnRun" Click="BtnRun_Click" Width="100" Margin="0,0,8,0">Выполнить</Button>
+            <Button Name="BtnExportCsv" Click="BtnExportCsv_Click" Width="120">Сохранить в CSV</Button>
         </StackPanel>
 
-        <Grid>
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="280"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
-
-            <!-- Left: список вершин и ввод импульсов -->
-            <Border Grid.Column="0" BorderBrush="Gray" BorderThickness="1" Padding="6" Margin="0,0,6,0">
-                <StackPanel>
-                    <TextBlock FontWeight="Bold" Text="Вектор начальных импульсов:" Margin="0,0,0,6"/>
-                    <ScrollViewer VerticalScrollBarVisibility="Auto" Height="520">
-                        <ItemsControl Name="ImpulsesList">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <DockPanel Margin="0,2,0,2">
-                                        <CheckBox IsChecked="{Binding IsVisible, Mode=TwoWay}" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                        <TextBlock Text="{Binding Name}" Width="140" VerticalAlignment="Center"/>
-                                        <TextBox Text="{Binding Impulse, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="90" Margin="6,0,0,0"/>
-                                    </DockPanel>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </ScrollViewer>
-                </StackPanel>
-            </Border>
-
-            <!-- Right: Canvas с графиками -->
-            <Border Grid.Column="1" BorderBrush="Gray" BorderThickness="1" Padding="6">
-                <ScrollViewer Name="PlotScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                    <Grid>
-                        <Canvas Name="PlotCanvas" Height="500" Background="White"/>
-                    </Grid>
-                </ScrollViewer>
-            </Border>
-        </Grid>
-    </DockPanel>
+        <!-- Plot area -->
+        <ScrollViewer x:Name="PlotScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+            <Canvas x:Name="PlotCanvas" Background="White" Width="800" Height="400"/>
+        </ScrollViewer>
+    </Grid>
 </Window>
 
 --------------------------------------------------------------------------------
@@ -8856,13 +10976,11 @@ StructureAnalizys.xaml
 <Window x:Class="NKM1.Visual.StructureAnalizys"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Структурный анализ" Height="500" Width="800">
+        Title="Структурный анализ" Height="500" Width="600">
     <Grid>
         <TextBox 
-            x:Name="Result"
-            HorizontalAlignment="Left" 
-            TextWrapping="Wrap" 
-            VerticalAlignment="Top"
+            x:Name="Result" 
+            TextWrapping="Wrap"
             IsReadOnly="True"
             VerticalScrollBarVisibility="Auto"
             HorizontalScrollBarVisibility="Auto"
