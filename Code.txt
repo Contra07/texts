@@ -1,0 +1,4525 @@
+﻿App.xaml.cs
+
+using System.Configuration;
+using System.Data;
+using System.Windows;
+
+namespace NKM1;
+
+/// <summary>
+/// Interaction logic for App.xaml
+/// </summary>
+public partial class App : Application
+{
+}
+
+
+--------------------------------------------------------------------------------
+
+AssemblyInfo.cs
+
+using System.Windows;
+
+[assembly:ThemeInfo(
+    ResourceDictionaryLocation.None,            //where theme specific resource dictionaries are located
+                                                //(used if a resource is not found in the page,
+                                                // or application resource dictionaries)
+    ResourceDictionaryLocation.SourceAssembly   //where the generic resource dictionary is located
+                                                //(used if a resource is not found in the page,
+                                                // app, or any theme specific resource dictionaries)
+)]
+
+--------------------------------------------------------------------------------
+
+MainWindow.xaml.cs
+
+using GraphX.Common.Enums;
+using GraphX.Controls;
+using GraphX.Logic.Models;
+using NKM1.Impulse;
+using NKM1.Models;
+using NKM1.Visual;
+using System.Text;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Navigation;
+using System.Windows.Shapes;
+using System.Xml.Linq;
+
+namespace NKM1;
+
+/// <summary>
+/// Interaction logic for MainWindow.xaml
+/// </summary>
+public partial class MainWindow : Window
+{
+    private DataGraphLogicCore? graphLogic;
+    private NKM? graph;
+
+    public MainWindow()
+    {
+        InitializeComponent();
+        // graph = new DataGraph();
+        graph = NKM.CreateRandomDirectedGraph(5, 6, 123);
+        //graph = DataGraph.RandomGraph();
+
+        graphLogic = new DataGraphLogicCore(graph);
+        graphArea.LogicCore = graphLogic;
+
+        ZoomControl.SetViewFinderVisibility(ZoomCtrl, Visibility.Visible);
+        // ZoomCtrl.MouseDoubleClick += ZoomCtrl_MouseDoubleClick;
+        graphArea.SetupSettings();
+        graphArea.GenerateGraph();
+    }
+
+    /// <summary>
+    /// Обновляет списки вершин и рёбер в элементах управления (ListBox’ы)
+    /// и перерисовывает граф в GraphArea.
+    /// </summary>
+    private void RefreshLists()
+    {
+        // Обновляем список вершин
+        LstVertices.ItemsSource = null;
+        LstVertices.ItemsSource = graph?.Vertices.Select(v => v.Name).ToList();
+
+        // Обновляем список рёбер
+        LstEdges.ItemsSource = null;
+        LstEdges.ItemsSource = graph?.Edges
+            .Select(e => $"{e.Source?.Name}-{e.Target?.Name} : {e.Weight}")
+            .ToList();
+
+        // Перерисовываем визуализацию
+        UpdateGraphAreaFromModel();
+    }
+
+    /// <summary>
+    /// Строит визуальный граф в GraphArea на основании текущей модели (graph).
+    /// </summary>
+    private void UpdateGraphAreaFromModel()
+    {
+        if (graphArea == null || graphLogic == null || graph == null) return;
+
+        // Генерируем визуальные контролы (VertexControl / EdgeControl)
+        try { graphArea.GenerateGraph(true, true); }
+        catch { try { graphArea.GenerateGraph(true); } catch { graphArea.RelayoutGraph(); } }
+
+        // Устанавливаем подписи рёбер (веса)
+        try
+        {
+            foreach (var kv in graphArea.EdgesList)
+            {
+                var edgeControl = kv.Value;
+                if (edgeControl == null) continue;
+                var dataEdge = edgeControl.Edge as Link;
+                if (dataEdge != null)
+                {
+                    // Ищем элемент TextBlock с именем "PART_EdgeLabel" внутри EdgeControl
+                    var label = FindVisualChildByName(edgeControl, "PART_EdgeLabel") as TextBlock;
+                    if (label != null) label.Text = dataEdge.Weight.ToString();
+
+                    // Если метки нет — отображаем вес во всплывающей подсказке
+                    edgeControl.ToolTip = dataEdge.Weight.ToString();
+                }
+            }
+        }
+        catch { /* не критично */ }
+    }
+
+    /// <summary>
+    /// Рекурсивный поиск визуального элемента по имени в дереве WPF.
+    /// Используется для поиска текстовых меток рёбер.
+    /// </summary>
+    private FrameworkElement FindVisualChildByName(DependencyObject parent, string name)
+    {
+        if (parent == null) return null;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is FrameworkElement fe && fe.Name == name)
+                return fe;
+            var result = FindVisualChildByName(child, name);
+            if (result != null) return result;
+        }
+        return null;
+    }
+
+    /// <summary>Кнопка "Добавить вершину".</summary>
+    private void BtnAddVertex_Click(object sender, RoutedEventArgs e)
+    {
+        var addWindow = new AddVertexWindow(graph)
+        {
+            Owner = this
+        };
+
+        if (addWindow.ShowDialog() == true)
+        {
+
+            if (graph.AddVertex(new Factor(addWindow.Name)))
+            {
+                RefreshLists();
+                MessageBox.Show($"Добавлен новый фактор '{addWindow.Name}'", "Успешно", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                MessageBox.Show("Не удалось добавить фактор", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+    }
+
+    /// <summary>Кнопка "Удалить вершину".</summary>
+    private void BtnRemoveVertex_Click(object sender, RoutedEventArgs e)
+    {
+        if (LstVertices.SelectedItem == null) return;
+        var id = LstVertices.SelectedItem.ToString();
+        graph.RemoveVertex(id);
+        RefreshLists();
+    }
+
+    /// <summary>Кнопка "Добавить ребро" между выбранными вершинами.</summary>
+    private void BtnAddEdge_Click(object sender, RoutedEventArgs e)
+    {
+        var addEdgeWindow = new AddEdgeWindow(graph)
+        {
+            Owner = this
+        };
+
+        if (addEdgeWindow.ShowDialog() == true)
+        {
+            if (graph.AddEdge(addEdgeWindow.Source, addEdgeWindow.Target, addEdgeWindow.Weight))
+            {
+                RefreshLists();
+                MessageBox.Show($"Добавлена новая связь '{addEdgeWindow.Source.Name}' -> '{addEdgeWindow.Target.Name}' с оценкой {addEdgeWindow.Weight}", "Успешно", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                MessageBox.Show($"Не удалось добавить связь '{addEdgeWindow.Source.Name}' -> '{addEdgeWindow.Target.Name}'", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+    }
+
+    /// <summary>Кнопка "Удалить ребро".</summary>
+    private void BtnRemoveEdge_Click(object sender, RoutedEventArgs e)
+    {
+        if (LstEdges.SelectedItem == null) return;
+        var text = LstEdges.SelectedItem.ToString();
+        var dash = text.IndexOf('-');
+        var colon = text.IndexOf(':');
+        var source = text.Substring(0, dash).Trim();
+        var target = text.Substring(dash + 1, colon - dash - 1).Trim();
+        graph.RemoveEdge(source, target);
+        RefreshLists();
+    }
+
+    /// <summary>Кнопка "Изменить вес ребра".</summary>
+    private void BtnSetWeight_Click(object sender, RoutedEventArgs e)
+    {
+        if (LstEdges.SelectedItem == null) return;
+        if (!double.TryParse(TxtEdgeWeight.Text, out var w))
+        {
+            MessageBox.Show("Неверный вес");
+            return;
+        }
+
+        var text = LstEdges.SelectedItem.ToString();
+        var dash = text.IndexOf('-');
+        var colon = text.IndexOf(':');
+        var source = text.Substring(0, dash).Trim();
+        var target = text.Substring(dash + 1, colon - dash - 1).Trim();
+        graph.SetEdgeWeight(source, target, w);
+        RefreshLists();
+    }
+
+    /// <summary>Кнопка "Перестроить layout" (перерасположить вершины).</summary>
+    private void BtnLayout_Click(object sender, RoutedEventArgs e)
+    {
+        try { graphArea?.RelayoutGraph(); }
+        catch (Exception ex) { MessageBox.Show("Layout failed: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// Обработчик выбора ребра в списке — отображает ID и вес в текстовых полях.
+    /// </summary>
+    private void LstEdges_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (LstEdges.SelectedItem == null)
+        {
+            TxtSelectedEdgeId.Text = "";
+            TxtSelectedEdgeWeight.Text = "";
+            return;
+        }
+
+        var text = LstEdges.SelectedItem.ToString();
+        TxtSelectedEdgeId.Text = text;
+        var colon = text.IndexOf(':');
+        if (colon >= 0)
+        {
+            var wStr = text.Substring(colon + 1).Trim();
+            TxtSelectedEdgeWeight.Text = wStr;
+        }
+    }
+
+    /// <summary>Обработчик выбора вершины — отображает её имя в TextBox.</summary>
+    private void LstVertices_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (LstVertices.SelectedItem == null) { TxtVertexName.Text = ""; return; }
+        TxtVertexName.Text = LstVertices.SelectedItem.ToString();
+    }
+
+    /// <summary>Кнопка "Переименовать вершину".</summary>
+    private void BtnSetVertexName_Click(object sender, RoutedEventArgs e)
+    {
+        if (LstVertices.SelectedItem == null) { MessageBox.Show("Выберите вершину"); return; }
+        var oldId = LstVertices.SelectedItem.ToString();
+        var newId = TxtVertexName.Text.Trim();
+        if (string.IsNullOrEmpty(newId))
+        {
+            MessageBox.Show("Имя не может быть пустым");
+            return;
+        }
+        graph.RenameVertex(oldId, newId);
+        RefreshLists();
+    }
+
+    /// <summary>
+    /// Двойной клик по ZoomControl — создаёт новую вершину в месте клика.
+    /// После этого обновляет визуализацию и позиционирует вершину вручную.
+    /// </summary>
+    private void ZoomCtrl_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        // Позиция курсора в координатах ZoomControl
+        var ptOnZoom = e.GetPosition(ZoomCtrl);
+
+        // Преобразуем координаты в пространство GraphArea (учитывая масштаб и сдвиг)
+        Point ptInGraphArea = ptOnZoom;
+        if (graphArea != null)
+        {
+            try
+            {
+                var relative = graphArea.TransformToVisual(ZoomCtrl);
+                ptInGraphArea = relative.Inverse.Transform(ptOnZoom);
+            }
+            catch
+            {
+                ptInGraphArea = ptOnZoom;
+            }
+        }
+
+        // Добавляем вершину в модель
+        var newV = graph.AddVertex();
+        RefreshLists(); // обновляем визуализацию
+
+        // После генерации ищем VertexControl для новой вершины и задаём позицию
+        try
+        {
+            if (graphArea.VertexList.TryGetValue(newV, out var vc))
+            {
+                try
+                {
+                    // Попытка использовать SetPosition (если поддерживается)
+                    dynamic dyn = vc;
+                    dyn.SetPosition(ptInGraphArea.X - (vc.ActualWidth / 2.0),
+                                    ptInGraphArea.Y - (vc.ActualHeight / 2.0));
+                }
+                catch
+                {
+                    // Альтернатива: обычный Canvas.SetLeft/Top
+                    Canvas.SetLeft(vc, ptInGraphArea.X - (vc.ActualWidth / 2.0));
+                    Canvas.SetTop(vc, ptInGraphArea.Y - (vc.ActualHeight / 2.0));
+                }
+            }
+        }
+        catch
+        {
+            // ошибка не критична
+        }
+    }
+
+	private void BtnCycle_Click(object sender, RoutedEventArgs e)
+	{
+        var builder = new StringBuilder();
+        var cycles = CycleDetection.FindAllSimpleCycles(graph);
+        foreach (var cycle in cycles)
+        {
+            builder.Append($"{(cycle.IsPositive ? "+" : "-")} ");
+            foreach (var v in cycle.Vertices)
+            {
+				builder.Append($"{v.Name} -> ");
+            }
+			builder.AppendLine();
+        }
+        MessageBox.Show(builder.ToString());
+
+        GraphMatrixAnalyzer.ExampleUsage(graph);
+    }
+
+	private void BtnImpulse_Click(object sender, RoutedEventArgs e)
+	{
+        var factors = graph.Vertices.ToList();
+
+        var testImpulse = new Dictionary<Factor, double>();
+        testImpulse.Add(factors[0], 0.1);
+		testImpulse.Add(factors[1], 0.2);
+
+
+		new ImpulseWindow(graph, testImpulse).ShowDialog();
+    }
+}
+--------------------------------------------------------------------------------
+
+ImpulseWindow.xaml.cs
+
+using NKM1.Models;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
+
+namespace NKM1.Impulse
+{
+	/// <summary>
+    /// Окно импульсного моделирования
+    /// </summary>
+	public partial class ImpulseWindow : Window
+	{
+		/// <summary>
+		/// Конструктор окна
+		/// </summary>
+		/// <param name="nkm">Граф НКМ</param>
+		/// <param name="impulses">Множество факторов (вершин), которым задан начальный импульс</param>
+		public ImpulseWindow(NKM nkm, Dictionary<Factor, double> impulses)
+		{
+			InitializeComponent();
+		}
+		
+		/**TODO: 
+		1. Рассчитать распространение импульсов по графу за несколько (пусть 10) единиц времен
+			Получить структуру типа:
+
+			Каждой единице времени соответствует значение в вершинах в данную единицу времени
+			(1 ед. вр.) - [ { Вершина 1 : значение 1}, { Вершина 2 : значение 2}, ... { Вершина N : значение N}]
+			(2 ед. вр.) - [ { Вершина 1 : значение 1}, { Вершина 2 : значение 2}, ... { Вершина N : значение N}]
+			...
+
+			Или для каждой вершины получить массив значений по единицам времени
+			(Вершина 1) - [ { (1 ед. вр.) : значение 1}, { (2 ед. вр.) : значение 2}, ... { (N ед. вр.) : значение N}]
+			(Вершина 2) - [ { (1 ед. вр.) : значение 1}, { (2 ед. вр.) : значение 2}, ... { (N ед. вр.) : значение N}]
+			...
+		
+		2. Отобразить всё это с цветами, подписями и т.д.
+		**/  
+	}
+}
+
+--------------------------------------------------------------------------------
+
+CycleEnumerator.cs
+
+using NKM1.Models;
+using QuickGraph;
+
+namespace NKM1;
+
+/// <summary>
+/// Поиск всех уникальных циклов в графе НКМ и определение их знака.
+/// </summary>
+public static class CycleDetection
+{
+    public static List<CycleInfo> FindAllSimpleCycles(
+        IBidirectionalGraph<Factor, Link> graph)
+    {
+        var result = new List<CycleInfo>();
+        var visited = new HashSet<Factor>();
+        var stack = new Stack<Factor>();
+        var currentPath = new HashSet<Factor>();
+        var uniqueCycles = new HashSet<string>();
+
+        foreach (var vertex in graph.Vertices)
+        {
+            DFS(graph, vertex, vertex, visited, stack, currentPath, result, uniqueCycles);
+            visited.Add(vertex);
+        }
+
+        return result;
+    }
+
+    private static void DFS(
+        IBidirectionalGraph<Factor, Link> graph,
+        Factor startFactor,
+        Factor currentFactor,
+        HashSet<Factor> visited,
+        Stack<Factor> stack,
+        HashSet<Factor> currentPath,
+        List<CycleInfo> result,
+        HashSet<string> uniqueCycles)
+    {
+        stack.Push(currentFactor);
+        currentPath.Add(currentFactor);
+
+        foreach (var edge in graph.OutEdges(currentFactor))
+        {
+            var next = edge.Target;
+
+            if (next.Equals(startFactor))
+            {
+                var cycle = stack.Reverse().ToList();
+                var key = NormalizeCycle(cycle);
+
+                if (uniqueCycles.Add(key))
+                {
+                    // вычисляем знак цикла
+                    int negativeEdges = CountNegativeEdges(graph, cycle);
+                    bool isPositive = negativeEdges % 2 == 0;
+
+                    result.Add(new CycleInfo
+                    {
+                        Vertices = cycle,
+                        IsPositive = isPositive,
+                        NegativeEdgeCount = negativeEdges
+                    });
+                }
+
+                continue;
+            }
+
+            if (!visited.Contains(next) && !currentPath.Contains(next))
+            {
+                DFS(graph, startFactor, next, visited, stack, currentPath, result, uniqueCycles);
+            }
+        }
+
+        stack.Pop();
+        currentPath.Remove(currentFactor);
+    }
+
+    /// <summary>
+    /// Подсчёт количества отрицательных рёбер в цикле.
+    /// </summary>
+    private static int CountNegativeEdges(IBidirectionalGraph<Factor, Link> graph, List<Factor> cycle)
+    {
+        int count = 0;
+        for (int i = 0; i < cycle.Count; i++)
+        {
+            var source = cycle[i];
+            var target = cycle[(i + 1) % cycle.Count];
+
+            var edge = graph.Edges.FirstOrDefault(e => e.Source == source && e.Target == target);
+            if (edge != null && edge.Weight < 0)
+                count++;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// Нормализует цикл — делает его независимым от точки старта и направления.
+    /// </summary>
+    private static string NormalizeCycle(List<Factor> cycle)
+    {
+        if (cycle.Count > 1 && cycle.First()?.Equals(cycle.Last()) == true)
+            cycle.RemoveAt(cycle.Count - 1);
+
+        var ordered = cycle
+            .Select((v, i) => (v, i))
+            .OrderBy(x => x.v?.Name)
+            .First();
+
+        var normalized = cycle.Skip(ordered.i).Concat(cycle.Take(ordered.i)).ToList();
+
+        string forward = string.Join("→", normalized.Select(v => v.Name));
+        string reverse = string.Join("→", normalized.Select(v => v.Name).Reverse());
+
+        return string.Compare(forward, reverse, StringComparison.Ordinal) <= 0
+            ? forward
+            : reverse;
+    }
+}
+
+--------------------------------------------------------------------------------
+
+CycleInfo.cs
+
+using NKM1.Models;
+
+namespace NKM1;
+
+public class CycleInfo
+{
+    public List<Factor> Vertices { get; set; } = new();
+    public bool IsPositive { get; set; }
+    public double NegativeEdgeCount { get; set; }
+
+    public override string ToString()
+    {
+        var sign = IsPositive ? "Положительный" : "Отрицательный";
+        return $"{string.Join(" -> ", Vertices.Select(v => v.Name))} ({sign})";
+    }
+}
+--------------------------------------------------------------------------------
+
+Factor.cs
+
+using GraphX.Common.Models;
+
+namespace NKM1.Models;
+
+/// <summary>
+/// Вершина графа. В НКМ - Фактор с определённым названием
+/// </summary>
+public class Factor : VertexBase
+{
+    private static long idCounter = 0;
+    public string? Name { get; set; }
+    public Factor()
+    {
+        ID = idCounter++;
+    }
+    public Factor(string name) : this()
+    {
+        Name = name; 
+    }
+    public override string ToString() => Name is not null ? Name : "Не задано";
+}
+
+--------------------------------------------------------------------------------
+
+Link.cs
+
+using GraphX.Common.Models;
+
+namespace NKM1.Models;
+
+/// <summary>
+/// Ребро графа. В НКМ - связь между факторами с определённым весом.
+/// </summary>
+public class Link : EdgeBase<Factor>
+{
+    public Link(Factor source, Factor target, double weight = 1.0) : base(source, target, weight)
+    {
+        Weight = weight;
+    }
+    public override string ToString() => $"{Weight,8:F}";
+}
+
+
+--------------------------------------------------------------------------------
+
+MatrixAnalyzer.cs
+
+using System.Numerics;
+using MathNet.Numerics.LinearAlgebra;
+
+namespace NKM1.Models;
+/// <summary>
+/// Класс для анализа графа через матрицу смежности.
+/// </summary>
+public static class GraphMatrixAnalyzer
+{
+    /// <summary>
+    /// Преобразует граф в матрицу смежности с весами.
+    /// </summary>
+    /// <param name="graph">Граф (например, NKM)</param>
+    /// <returns>Матрица NxN, где N = количество вершин</returns>
+    public static double[,] ToAdjacencyMatrix(NKM graph)
+    {
+        var vertices = graph.Vertices.ToList();
+        int n = vertices.Count;
+        var matrix = new double[n, n];
+
+        for (int i = 0; i < n; i++)
+        {
+            for (int j = 0; j < n; j++)
+                matrix[i, j] = 0; // по умолчанию нет связи
+        }
+
+        foreach (var edge in graph.Edges)
+        {
+            int i = vertices.IndexOf(edge.Source);
+            int j = vertices.IndexOf(edge.Target);
+            matrix[i, j] = edge.Weight;
+        }
+
+        return matrix;
+    }
+
+    /// <summary>
+    /// Вычисляет собственные числа матрицы смежности.
+    /// </summary>
+    public static Complex[] ComputeEigenvalues(double[,] adjacencyMatrix)
+    {
+        // Используем Math.NET Numerics
+        var matrix = Matrix<double>.Build.DenseOfArray(adjacencyMatrix);
+        var eigen = matrix.Evd();
+
+        // Возвращаем все собственные значения
+        return eigen.EigenValues.Select(c => new Complex(c.Real, c.Imaginary)).ToArray();
+    }
+
+    /// <summary>
+    /// Находит максимальное по модулю собственное число.
+    /// </summary>
+    public static Complex GetMaxEigenvalueByMagnitude(Complex[] eigenvalues)
+    {
+        return eigenvalues.OrderByDescending(e => e.Magnitude).FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Быстрая связка: от графа до спектрального радиуса.
+    /// </summary>
+    public static double GetSpectralRadius(NKM graph)
+    {
+        var matrix = ToAdjacencyMatrix(graph);
+        var eigenvalues = ComputeEigenvalues(matrix);
+        return eigenvalues.Max(e => e.Magnitude);
+    }
+
+    /// <summary>
+    /// Пример использования в коде.
+    /// </summary>
+    public static void ExampleUsage(NKM graph)
+    {
+        var matrix = ToAdjacencyMatrix(graph);
+        var eigenvalues = ComputeEigenvalues(matrix);
+        var maxEigen = GetMaxEigenvalueByMagnitude(eigenvalues);
+
+        Console.WriteLine("Матрица смежности:");
+        PrintMatrix(matrix);
+
+        Console.WriteLine("\nСобственные числа:");
+        foreach (var e in eigenvalues)
+            Console.WriteLine($"λ = {e.Real:F3} {(e.Imaginary >= 0 ? "+" : "-")} {Math.Abs(e.Imaginary):F3}i");
+
+        Console.WriteLine($"\nМаксимальное по модулю собственное число: |λmax| = {maxEigen.Magnitude:F3}");
+    }
+
+    /// <summary>
+    /// Утилита для красивого вывода матрицы в консоль.
+    /// </summary>
+    public static void PrintMatrix(double[,] matrix)
+    {
+        int n = matrix.GetLength(0);
+        for (int i = 0; i < n; i++)
+        {
+            for (int j = 0; j < n; j++)
+                Console.Write($"{matrix[i, j],8:F2}");
+            Console.WriteLine();
+        }
+    }
+}
+
+/// <summary>
+/// Простая структура комплексного числа, если Math.NET не подключен.
+/// </summary>
+// public struct Complex
+// {
+//     public double Real { get; }
+//     public double Imaginary { get; }
+//     public double Magnitude => Math.Sqrt(Real * Real + Imaginary * Imaginary);
+//     public Complex(double re, double im) { Real = re; Imaginary = im; }
+
+//     public override string ToString()
+//         => $"{Real:F3}{(Imaginary >= 0 ? "+" : "-")}{Math.Abs(Imaginary):F3}i";
+// }
+
+--------------------------------------------------------------------------------
+
+NKM.cs
+
+using QuickGraph;
+
+namespace NKM1.Models
+{
+	/// <summary>
+    /// Модель графа. Этот граф и является НКМ.
+    /// </summary>
+	public class NKM : BidirectionalGraph<Factor, Link>
+    {
+        private int _counter = 0;
+
+        public NKM()
+        {
+
+        }
+
+        public Factor AddVertex()
+        {
+            var v = new Factor("V" + (++_counter));
+            base.AddVertex(v);
+            return v;
+        }
+
+        public void RenameVertex(string oldId, string newId)
+        {
+            var v = Vertices.FirstOrDefault(x => x.Name == oldId);
+            if (v != null) v.Name = newId;
+        }
+
+
+		public void RemoveVertex(string id)
+		{
+			RemoveVertexIf((v) => v.Name == id);
+			RemoveEdgeIf((e) => e.Source?.Name == id || e.Target?.Name == id);
+		}
+
+		public bool AddEdge(Factor source, Factor target, double weight)
+        {
+            if (source is not null && target is not null) 
+				return AddEdge(source.ID, target.ID, weight);
+			else
+				return false;
+        }
+
+        public bool AddEdge(long sourceId, long targetId, double weight)
+        {
+            var s = Vertices.FirstOrDefault(v => v.ID == sourceId);
+            var t = Vertices.FirstOrDefault(v => v.ID == targetId);
+            if (s != null && t != null && !EdgeExists(sourceId, targetId))
+			{
+                return base.AddEdge(new Link(s, t, weight));
+            }
+			else
+			{
+				return false;
+			}
+        }
+
+
+        public void RemoveEdge(string sourceId, string targetId)
+        {
+            RemoveEdgeIf(e => e.Source?.Name == sourceId && e.Target?.Name == targetId);
+        }
+
+
+		public void SetEdgeWeight(string sourceId, string targetId, double w)
+		{
+			var e = Edges.FirstOrDefault(ed => ed.Source?.Name == sourceId && ed.Target?.Name == targetId);
+			if (e != null) e.Weight = w;
+		}
+		
+		public bool EdgeExists(Factor source, Factor target)
+		=>	source is not null && target is not null
+			&& EdgeExists(source.ID, target.ID);
+
+		public bool EdgeExists(long sourceId, long targetId)
+		=> Edges.Any(e => e.Source.ID == sourceId && e.Target.ID == targetId)
+			|| Edges.Any(e => e.Source.ID == targetId && e.Target.ID == sourceId);
+
+		public static NKM CreateRandomDirectedGraph(int vertexCount, int edgeCount, int? randomSeed = null)
+		{
+			if (vertexCount <= 0)
+			{
+				throw new ArgumentOutOfRangeException(nameof(vertexCount), "Количество вершин должно быть положительным.");
+			}
+
+			// Максимальное количество ребер в простом ориентированном графе
+			var maxEdges = vertexCount * (vertexCount - 1);
+			if (edgeCount < 0 || edgeCount > maxEdges)
+			{
+				throw new ArgumentOutOfRangeException(nameof(edgeCount), $"Количество ребер должно быть в диапазоне от 0 до {maxEdges}.");
+			}
+
+			var graph = new NKM();
+			var random = randomSeed.HasValue ? new Random(randomSeed.Value) : new Random();
+
+			// 1. Создаем вершины и сохраняем их в массив для быстрого доступа
+			var vertices = new Factor[vertexCount];
+			for (int i = 0; i < vertexCount; i++)
+			{
+				vertices[i] = graph.AddVertex();
+			}
+
+			// 2. Создаем и добавляем случайные ребра
+			var existingEdges = new HashSet<Tuple<int, int>>();
+			while (graph.EdgeCount < edgeCount)
+			{
+				// Выбираем случайную исходную и целевую вершины
+				var sourceIndex = random.Next(0, vertexCount);
+				var targetIndex = random.Next(0, vertexCount);
+
+				// Проверяем, чтобы не было самопетель и дублирующихся ребер
+				if (sourceIndex == targetIndex)
+				{
+					continue;
+				}
+
+				var newEdgeTuple = new Tuple<int, int>(sourceIndex, targetIndex);
+				if (!existingEdges.Contains(newEdgeTuple))
+				{
+					var sourceVertex = vertices[sourceIndex];
+					var targetVertex = vertices[targetIndex];
+					// Создаем ребро со случайным весом
+					var weight = (random.Next(0, 2) == 0 ? 1 : -1) * random.NextDouble();
+					graph.AddEdge(sourceVertex.ID, targetVertex.ID, weight);
+
+					existingEdges.Add(newEdgeTuple);
+				}
+			}
+
+			return graph;
+		}
+	}
+
+
+}
+
+--------------------------------------------------------------------------------
+
+AddEdgeWindow.xaml.cs
+
+using NKM1.Models;
+using System;
+using System.Linq;
+using System.Windows;
+
+namespace NKM1.Visual;
+
+public partial class AddEdgeWindow : Window
+{
+    private readonly NKM graph;
+    public Factor Source { get; private set; }
+    public Factor Target { get; private set; }
+    public double Weight { get; private set; }
+
+    public AddEdgeWindow(NKM graph)
+    {
+        InitializeComponent();
+        this.graph = graph;
+
+        // Заполняем списки факторами
+        var names = graph.Vertices.Select(v => v.Name).ToList();
+        CmbSource.ItemsSource = names;
+        CmbTarget.ItemsSource = names;
+    }
+
+    private void CmbSource_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (CmbSource.SelectedItem == null) return;
+        string selected = CmbSource.SelectedItem.ToString();
+        CmbTarget.ItemsSource = graph.Vertices
+            .Select(v => v.Name)
+            .Where(name => name != selected)
+            .ToList();
+    }
+
+    private void CmbTarget_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (CmbTarget.SelectedItem == null) return;
+        string selected = CmbTarget.SelectedItem.ToString();
+        CmbSource.ItemsSource = graph.Vertices
+            .Select(v => v.Name)
+            .Where(name => name != selected)
+            .ToList();
+    }
+
+    private void BtnAdd_Click(object sender, RoutedEventArgs e)
+    {
+        if (CmbSource.SelectedItem == null || CmbTarget.SelectedItem == null)
+        {
+            MessageBox.Show("Выберите источник и цель.", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!double.TryParse(TxtWeight.Text.Replace(',', '.'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double weight))
+        {
+            MessageBox.Show("Введите корректное число.", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (weight < -1 || weight > 1)
+        {
+            MessageBox.Show("Значение должно быть в диапазоне [-1; 1].", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+
+        var sourceName = CmbSource.SelectedItem.ToString();
+        var targetName = CmbTarget.SelectedItem.ToString();
+        var source = graph.Vertices.First(e => e.Name == sourceName );
+        var target = graph.Vertices.First(e => e.Name == targetName);
+
+        if (graph.EdgeExists(source, target))
+        {
+            MessageBox.Show($"Связь между факторами '{sourceName}' и '{targetName}' ужа существует.", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        Source = source;
+        Target = target;
+        Weight = weight;
+
+        DialogResult = true;
+    }
+
+    private void BtnCancel_Click(object sender, RoutedEventArgs e)
+    {
+        DialogResult = false;
+    }
+}
+
+--------------------------------------------------------------------------------
+
+AddVertexWindow.xaml.cs
+
+using NKM1.Models;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
+using System.Xml.Linq;
+
+namespace NKM1.Visual
+{
+    /// <summary>
+    /// Interaction logic for AddVertexWindow.xaml
+    /// </summary>
+    public partial class AddVertexWindow : Window
+    {
+        public string Name { get; set; }
+        private NKM graph;
+
+        public AddVertexWindow(NKM graph)
+        {
+            this.graph = graph;
+            InitializeComponent();
+        }
+
+        private void BtnAdd_Click(object sender, RoutedEventArgs e)
+        {
+            var name = TxtName.Text.Trim();
+
+            // Проверка заполнения
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                MessageBox.Show("Введите имя фактора.", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Проверка уникальности
+            if (graph.Vertices.Any(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            {
+                MessageBox.Show("Фактор с таким именем уже существует.", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            Name = name;
+            DialogResult = true;
+        }
+
+        private void BtnCancel_Click(object sender, RoutedEventArgs e)
+        {
+            DialogResult = false;
+        }
+    }
+}
+
+--------------------------------------------------------------------------------
+
+DataGraphArea.cs
+
+using GraphX.Controls;
+using NKM1.Models;
+
+namespace NKM1.Visual;
+
+public class DataGraphArea : GraphArea<Factor, Link, NKM>
+{
+    public DataGraphArea()
+    {
+    }
+
+    public void SetupSettings()
+    {
+        SetEdgesDashStyle(EdgeDashStyle.Dash);
+        ShowAllEdgesArrows(true);
+        ShowAllEdgesLabels(true);
+        SetVerticesDrag(true, true);
+    }
+}
+--------------------------------------------------------------------------------
+
+DataGraphLogicCore.cs
+
+using GraphX.Common.Enums;
+using GraphX.Logic.Algorithms.LayoutAlgorithms;
+using GraphX.Logic.Models;
+using NKM1.Models;
+
+namespace NKM1.Visual;
+
+public class DataGraphLogicCore : GXLogicCore<Factor, Link, NKM>
+{
+    public DataGraphLogicCore()
+    {
+        SetProperties();
+    }
+
+    public DataGraphLogicCore(NKM graph) : base(graph)
+    {
+        Graph = graph;
+        SetProperties();
+    }
+
+    private void SetProperties()
+    {
+        DefaultLayoutAlgorithm = LayoutAlgorithmTypeEnum.KK;
+        DefaultOverlapRemovalAlgorithm = OverlapRemovalAlgorithmTypeEnum.FSA;
+        DefaultEdgeRoutingAlgorithm = EdgeRoutingAlgorithmTypeEnum.SimpleER;
+        AsyncAlgorithmCompute = false;
+    }
+}
+--------------------------------------------------------------------------------
+
+.NETCoreApp,Version=v9.0.AssemblyAttributes.cs
+
+// <autogenerated />
+using System;
+using System.Reflection;
+[assembly: global::System.Runtime.Versioning.TargetFrameworkAttribute(".NETCoreApp,Version=v9.0", FrameworkDisplayName = ".NET 9.0")]
+
+--------------------------------------------------------------------------------
+
+App.g.cs
+
+#pragma checksum "..\..\..\App.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "0FFD774BEC151DFCFDD01A64338B776A5D24CEB0"
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using NKM1;
+using System;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Controls.Ribbon;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Ink;
+using System.Windows.Input;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
+using System.Windows.Media.TextFormatting;
+using System.Windows.Navigation;
+using System.Windows.Shapes;
+using System.Windows.Shell;
+
+
+namespace NKM1 {
+    
+    
+    /// <summary>
+    /// App
+    /// </summary>
+    public partial class App : System.Windows.Application {
+        
+        /// <summary>
+        /// InitializeComponent
+        /// </summary>
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public void InitializeComponent() {
+            
+            #line 5 "..\..\..\App.xaml"
+            this.StartupUri = new System.Uri("MainWindow.xaml", System.UriKind.Relative);
+            
+            #line default
+            #line hidden
+        }
+        
+        /// <summary>
+        /// Application Entry Point.
+        /// </summary>
+        [System.STAThreadAttribute()]
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public static void Main() {
+            NKM1.App app = new NKM1.App();
+            app.InitializeComponent();
+            app.Run();
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+App.g.i.cs
+
+#pragma checksum "..\..\..\App.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "0FFD774BEC151DFCFDD01A64338B776A5D24CEB0"
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using NKM1;
+using System;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Controls.Ribbon;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Ink;
+using System.Windows.Input;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
+using System.Windows.Media.TextFormatting;
+using System.Windows.Navigation;
+using System.Windows.Shapes;
+using System.Windows.Shell;
+
+
+namespace NKM1 {
+    
+    
+    /// <summary>
+    /// App
+    /// </summary>
+    public partial class App : System.Windows.Application {
+        
+        /// <summary>
+        /// InitializeComponent
+        /// </summary>
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public void InitializeComponent() {
+            
+            #line 5 "..\..\..\App.xaml"
+            this.StartupUri = new System.Uri("MainWindow.xaml", System.UriKind.Relative);
+            
+            #line default
+            #line hidden
+        }
+        
+        /// <summary>
+        /// Application Entry Point.
+        /// </summary>
+        [System.STAThreadAttribute()]
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public static void Main() {
+            NKM1.App app = new NKM1.App();
+            app.InitializeComponent();
+            app.Run();
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+GeneratedInternalTypeHelper.g.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+namespace XamlGeneratedNamespace {
+    
+    
+    /// <summary>
+    /// GeneratedInternalTypeHelper
+    /// </summary>
+    [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+    [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+    [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
+    public sealed class GeneratedInternalTypeHelper : System.Windows.Markup.InternalTypeHelper {
+        
+        /// <summary>
+        /// CreateInstance
+        /// </summary>
+        protected override object CreateInstance(System.Type type, System.Globalization.CultureInfo culture) {
+            return System.Activator.CreateInstance(type, ((System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic) 
+                            | (System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.CreateInstance)), null, null, culture);
+        }
+        
+        /// <summary>
+        /// GetPropertyValue
+        /// </summary>
+        protected override object GetPropertyValue(System.Reflection.PropertyInfo propertyInfo, object target, System.Globalization.CultureInfo culture) {
+            return propertyInfo.GetValue(target, System.Reflection.BindingFlags.Default, null, null, culture);
+        }
+        
+        /// <summary>
+        /// SetPropertyValue
+        /// </summary>
+        protected override void SetPropertyValue(System.Reflection.PropertyInfo propertyInfo, object target, object value, System.Globalization.CultureInfo culture) {
+            propertyInfo.SetValue(target, value, System.Reflection.BindingFlags.Default, null, null, culture);
+        }
+        
+        /// <summary>
+        /// CreateDelegate
+        /// </summary>
+        protected override System.Delegate CreateDelegate(System.Type delegateType, object target, string handler) {
+            return ((System.Delegate)(target.GetType().InvokeMember("_CreateDelegate", (System.Reflection.BindingFlags.InvokeMethod 
+                            | (System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)), null, target, new object[] {
+                        delegateType,
+                        handler}, null)));
+        }
+        
+        /// <summary>
+        /// AddEventHandler
+        /// </summary>
+        protected override void AddEventHandler(System.Reflection.EventInfo eventInfo, object target, System.Delegate handler) {
+            eventInfo.AddEventHandler(target, handler);
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+GeneratedInternalTypeHelper.g.i.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+namespace XamlGeneratedNamespace {
+    
+    
+    /// <summary>
+    /// GeneratedInternalTypeHelper
+    /// </summary>
+    [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+    [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+    [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
+    public sealed class GeneratedInternalTypeHelper : System.Windows.Markup.InternalTypeHelper {
+        
+        /// <summary>
+        /// CreateInstance
+        /// </summary>
+        protected override object CreateInstance(System.Type type, System.Globalization.CultureInfo culture) {
+            return System.Activator.CreateInstance(type, ((System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic) 
+                            | (System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.CreateInstance)), null, null, culture);
+        }
+        
+        /// <summary>
+        /// GetPropertyValue
+        /// </summary>
+        protected override object GetPropertyValue(System.Reflection.PropertyInfo propertyInfo, object target, System.Globalization.CultureInfo culture) {
+            return propertyInfo.GetValue(target, System.Reflection.BindingFlags.Default, null, null, culture);
+        }
+        
+        /// <summary>
+        /// SetPropertyValue
+        /// </summary>
+        protected override void SetPropertyValue(System.Reflection.PropertyInfo propertyInfo, object target, object value, System.Globalization.CultureInfo culture) {
+            propertyInfo.SetValue(target, value, System.Reflection.BindingFlags.Default, null, null, culture);
+        }
+        
+        /// <summary>
+        /// CreateDelegate
+        /// </summary>
+        protected override System.Delegate CreateDelegate(System.Type delegateType, object target, string handler) {
+            return ((System.Delegate)(target.GetType().InvokeMember("_CreateDelegate", (System.Reflection.BindingFlags.InvokeMethod 
+                            | (System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)), null, target, new object[] {
+                        delegateType,
+                        handler}, null)));
+        }
+        
+        /// <summary>
+        /// AddEventHandler
+        /// </summary>
+        protected override void AddEventHandler(System.Reflection.EventInfo eventInfo, object target, System.Delegate handler) {
+            eventInfo.AddEventHandler(target, handler);
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+MainWindow.g.cs
+
+#pragma checksum "..\..\..\MainWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "1E7FCA1D0BB34C450B92A31872ACD49C7F0890E8"
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using GraphX.Controls;
+using GraphX.Controls.Animations;
+using GraphX.Controls.Models;
+using NKM1;
+using NKM1.Visual;
+using System;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Controls.Ribbon;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Ink;
+using System.Windows.Input;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
+using System.Windows.Media.TextFormatting;
+using System.Windows.Navigation;
+using System.Windows.Shapes;
+using System.Windows.Shell;
+
+
+namespace NKM1 {
+    
+    
+    /// <summary>
+    /// MainWindow
+    /// </summary>
+    public partial class MainWindow : System.Windows.Window, System.Windows.Markup.IComponentConnector {
+        
+        
+        #line 13 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnAddVertex;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 14 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnRemoveVertex;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 15 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnAddEdge;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 16 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnRemoveEdge;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 19 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBox TxtEdgeWeight;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 20 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnSetWeight;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 22 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnLayout;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 24 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnCycle;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 26 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnImpulse;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 37 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal GraphX.Controls.ZoomControl ZoomCtrl;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 38 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal NKM1.Visual.DataGraphArea graphArea;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 45 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.ListBox LstVertices;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 49 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBox TxtVertexName;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 50 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnSetVertexName;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 55 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.ListBox LstEdges;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 61 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBlock TxtSelectedEdgeId;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 63 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBlock TxtSelectedEdgeWeight;
+        
+        #line default
+        #line hidden
+        
+        private bool _contentLoaded;
+        
+        /// <summary>
+        /// InitializeComponent
+        /// </summary>
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public void InitializeComponent() {
+            if (_contentLoaded) {
+                return;
+            }
+            _contentLoaded = true;
+            System.Uri resourceLocater = new System.Uri("/NKM1;component/mainwindow.xaml", System.UriKind.Relative);
+            
+            #line 1 "..\..\..\MainWindow.xaml"
+            System.Windows.Application.LoadComponent(this, resourceLocater);
+            
+            #line default
+            #line hidden
+        }
+        
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1800:DoNotCastUnnecessarily")]
+        void System.Windows.Markup.IComponentConnector.Connect(int connectionId, object target) {
+            switch (connectionId)
+            {
+            case 1:
+            this.BtnAddVertex = ((System.Windows.Controls.Button)(target));
+            
+            #line 13 "..\..\..\MainWindow.xaml"
+            this.BtnAddVertex.Click += new System.Windows.RoutedEventHandler(this.BtnAddVertex_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 2:
+            this.BtnRemoveVertex = ((System.Windows.Controls.Button)(target));
+            
+            #line 14 "..\..\..\MainWindow.xaml"
+            this.BtnRemoveVertex.Click += new System.Windows.RoutedEventHandler(this.BtnRemoveVertex_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 3:
+            this.BtnAddEdge = ((System.Windows.Controls.Button)(target));
+            
+            #line 15 "..\..\..\MainWindow.xaml"
+            this.BtnAddEdge.Click += new System.Windows.RoutedEventHandler(this.BtnAddEdge_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 4:
+            this.BtnRemoveEdge = ((System.Windows.Controls.Button)(target));
+            
+            #line 16 "..\..\..\MainWindow.xaml"
+            this.BtnRemoveEdge.Click += new System.Windows.RoutedEventHandler(this.BtnRemoveEdge_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 5:
+            this.TxtEdgeWeight = ((System.Windows.Controls.TextBox)(target));
+            return;
+            case 6:
+            this.BtnSetWeight = ((System.Windows.Controls.Button)(target));
+            
+            #line 20 "..\..\..\MainWindow.xaml"
+            this.BtnSetWeight.Click += new System.Windows.RoutedEventHandler(this.BtnSetWeight_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 7:
+            this.BtnLayout = ((System.Windows.Controls.Button)(target));
+            
+            #line 22 "..\..\..\MainWindow.xaml"
+            this.BtnLayout.Click += new System.Windows.RoutedEventHandler(this.BtnLayout_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 8:
+            this.BtnCycle = ((System.Windows.Controls.Button)(target));
+            
+            #line 24 "..\..\..\MainWindow.xaml"
+            this.BtnCycle.Click += new System.Windows.RoutedEventHandler(this.BtnCycle_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 9:
+            this.BtnImpulse = ((System.Windows.Controls.Button)(target));
+            
+            #line 26 "..\..\..\MainWindow.xaml"
+            this.BtnImpulse.Click += new System.Windows.RoutedEventHandler(this.BtnImpulse_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 10:
+            this.ZoomCtrl = ((GraphX.Controls.ZoomControl)(target));
+            return;
+            case 11:
+            this.graphArea = ((NKM1.Visual.DataGraphArea)(target));
+            return;
+            case 12:
+            this.LstVertices = ((System.Windows.Controls.ListBox)(target));
+            
+            #line 45 "..\..\..\MainWindow.xaml"
+            this.LstVertices.SelectionChanged += new System.Windows.Controls.SelectionChangedEventHandler(this.LstVertices_SelectionChanged);
+            
+            #line default
+            #line hidden
+            return;
+            case 13:
+            this.TxtVertexName = ((System.Windows.Controls.TextBox)(target));
+            return;
+            case 14:
+            this.BtnSetVertexName = ((System.Windows.Controls.Button)(target));
+            
+            #line 50 "..\..\..\MainWindow.xaml"
+            this.BtnSetVertexName.Click += new System.Windows.RoutedEventHandler(this.BtnSetVertexName_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 15:
+            this.LstEdges = ((System.Windows.Controls.ListBox)(target));
+            
+            #line 55 "..\..\..\MainWindow.xaml"
+            this.LstEdges.SelectionChanged += new System.Windows.Controls.SelectionChangedEventHandler(this.LstEdges_SelectionChanged);
+            
+            #line default
+            #line hidden
+            return;
+            case 16:
+            this.TxtSelectedEdgeId = ((System.Windows.Controls.TextBlock)(target));
+            return;
+            case 17:
+            this.TxtSelectedEdgeWeight = ((System.Windows.Controls.TextBlock)(target));
+            return;
+            }
+            this._contentLoaded = true;
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+MainWindow.g.i.cs
+
+#pragma checksum "..\..\..\MainWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "1E7FCA1D0BB34C450B92A31872ACD49C7F0890E8"
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using GraphX.Controls;
+using GraphX.Controls.Animations;
+using GraphX.Controls.Models;
+using NKM1;
+using NKM1.Visual;
+using System;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Controls.Ribbon;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Ink;
+using System.Windows.Input;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
+using System.Windows.Media.TextFormatting;
+using System.Windows.Navigation;
+using System.Windows.Shapes;
+using System.Windows.Shell;
+
+
+namespace NKM1 {
+    
+    
+    /// <summary>
+    /// MainWindow
+    /// </summary>
+    public partial class MainWindow : System.Windows.Window, System.Windows.Markup.IComponentConnector {
+        
+        
+        #line 13 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnAddVertex;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 14 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnRemoveVertex;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 15 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnAddEdge;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 16 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnRemoveEdge;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 19 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBox TxtEdgeWeight;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 20 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnSetWeight;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 22 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnLayout;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 24 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnCycle;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 26 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnImpulse;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 37 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal GraphX.Controls.ZoomControl ZoomCtrl;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 38 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal NKM1.Visual.DataGraphArea graphArea;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 45 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.ListBox LstVertices;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 49 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBox TxtVertexName;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 50 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnSetVertexName;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 55 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.ListBox LstEdges;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 61 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBlock TxtSelectedEdgeId;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 63 "..\..\..\MainWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBlock TxtSelectedEdgeWeight;
+        
+        #line default
+        #line hidden
+        
+        private bool _contentLoaded;
+        
+        /// <summary>
+        /// InitializeComponent
+        /// </summary>
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public void InitializeComponent() {
+            if (_contentLoaded) {
+                return;
+            }
+            _contentLoaded = true;
+            System.Uri resourceLocater = new System.Uri("/NKM1;component/mainwindow.xaml", System.UriKind.Relative);
+            
+            #line 1 "..\..\..\MainWindow.xaml"
+            System.Windows.Application.LoadComponent(this, resourceLocater);
+            
+            #line default
+            #line hidden
+        }
+        
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1800:DoNotCastUnnecessarily")]
+        void System.Windows.Markup.IComponentConnector.Connect(int connectionId, object target) {
+            switch (connectionId)
+            {
+            case 1:
+            this.BtnAddVertex = ((System.Windows.Controls.Button)(target));
+            
+            #line 13 "..\..\..\MainWindow.xaml"
+            this.BtnAddVertex.Click += new System.Windows.RoutedEventHandler(this.BtnAddVertex_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 2:
+            this.BtnRemoveVertex = ((System.Windows.Controls.Button)(target));
+            
+            #line 14 "..\..\..\MainWindow.xaml"
+            this.BtnRemoveVertex.Click += new System.Windows.RoutedEventHandler(this.BtnRemoveVertex_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 3:
+            this.BtnAddEdge = ((System.Windows.Controls.Button)(target));
+            
+            #line 15 "..\..\..\MainWindow.xaml"
+            this.BtnAddEdge.Click += new System.Windows.RoutedEventHandler(this.BtnAddEdge_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 4:
+            this.BtnRemoveEdge = ((System.Windows.Controls.Button)(target));
+            
+            #line 16 "..\..\..\MainWindow.xaml"
+            this.BtnRemoveEdge.Click += new System.Windows.RoutedEventHandler(this.BtnRemoveEdge_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 5:
+            this.TxtEdgeWeight = ((System.Windows.Controls.TextBox)(target));
+            return;
+            case 6:
+            this.BtnSetWeight = ((System.Windows.Controls.Button)(target));
+            
+            #line 20 "..\..\..\MainWindow.xaml"
+            this.BtnSetWeight.Click += new System.Windows.RoutedEventHandler(this.BtnSetWeight_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 7:
+            this.BtnLayout = ((System.Windows.Controls.Button)(target));
+            
+            #line 22 "..\..\..\MainWindow.xaml"
+            this.BtnLayout.Click += new System.Windows.RoutedEventHandler(this.BtnLayout_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 8:
+            this.BtnCycle = ((System.Windows.Controls.Button)(target));
+            
+            #line 24 "..\..\..\MainWindow.xaml"
+            this.BtnCycle.Click += new System.Windows.RoutedEventHandler(this.BtnCycle_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 9:
+            this.BtnImpulse = ((System.Windows.Controls.Button)(target));
+            
+            #line 26 "..\..\..\MainWindow.xaml"
+            this.BtnImpulse.Click += new System.Windows.RoutedEventHandler(this.BtnImpulse_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 10:
+            this.ZoomCtrl = ((GraphX.Controls.ZoomControl)(target));
+            return;
+            case 11:
+            this.graphArea = ((NKM1.Visual.DataGraphArea)(target));
+            return;
+            case 12:
+            this.LstVertices = ((System.Windows.Controls.ListBox)(target));
+            
+            #line 45 "..\..\..\MainWindow.xaml"
+            this.LstVertices.SelectionChanged += new System.Windows.Controls.SelectionChangedEventHandler(this.LstVertices_SelectionChanged);
+            
+            #line default
+            #line hidden
+            return;
+            case 13:
+            this.TxtVertexName = ((System.Windows.Controls.TextBox)(target));
+            return;
+            case 14:
+            this.BtnSetVertexName = ((System.Windows.Controls.Button)(target));
+            
+            #line 50 "..\..\..\MainWindow.xaml"
+            this.BtnSetVertexName.Click += new System.Windows.RoutedEventHandler(this.BtnSetVertexName_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 15:
+            this.LstEdges = ((System.Windows.Controls.ListBox)(target));
+            
+            #line 55 "..\..\..\MainWindow.xaml"
+            this.LstEdges.SelectionChanged += new System.Windows.Controls.SelectionChangedEventHandler(this.LstEdges_SelectionChanged);
+            
+            #line default
+            #line hidden
+            return;
+            case 16:
+            this.TxtSelectedEdgeId = ((System.Windows.Controls.TextBlock)(target));
+            return;
+            case 17:
+            this.TxtSelectedEdgeWeight = ((System.Windows.Controls.TextBlock)(target));
+            return;
+            }
+            this._contentLoaded = true;
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+NKM1.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_2evip03l_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_2evip03l_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_2ilrrfdx_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3a0ab573c0f3f9b30ae9dd15eac88c6a860e30bd")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_2ilrrfdx_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_2yhspedr_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_2yhspedr_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_31wgwigc_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_31wgwigc_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_3fynkeb3_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_3fynkeb3_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_43eilagg_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3a0ab573c0f3f9b30ae9dd15eac88c6a860e30bd")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_43eilagg_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_4gjd5den_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ffbf09650ebbd8036a139b6f64b6e2e6007441cc")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_4gjd5den_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_50cc2qle_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ffbf09650ebbd8036a139b6f64b6e2e6007441cc")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_50cc2qle_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_bwgwhygb_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3a0ab573c0f3f9b30ae9dd15eac88c6a860e30bd")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_bwgwhygb_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_cse31mo2_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_cse31mo2_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_fusgzsxm_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ffbf09650ebbd8036a139b6f64b6e2e6007441cc")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_fusgzsxm_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_gdghs1mk_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ffbf09650ebbd8036a139b6f64b6e2e6007441cc")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_gdghs1mk_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_gi0ne1sp_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_gi0ne1sp_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_h4bdetk2_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_h4bdetk2_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_ha05xgzy_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_ha05xgzy_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_i5mvrpfc_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ffbf09650ebbd8036a139b6f64b6e2e6007441cc")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_i5mvrpfc_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_ja2is021_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_ja2is021_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_kv3zrvtk_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_kv3zrvtk_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_l2sxy5kz_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ffbf09650ebbd8036a139b6f64b6e2e6007441cc")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_l2sxy5kz_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_le45fsqv_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_le45fsqv_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_leao0qtr_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_leao0qtr_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_lngmw44j_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_lngmw44j_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_mo0af3xj_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_mo0af3xj_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_mqwbu5rw_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_mqwbu5rw_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_nf521mkt_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_nf521mkt_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_odqswekk_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ffbf09650ebbd8036a139b6f64b6e2e6007441cc")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_odqswekk_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_sbf4ovua_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_sbf4ovua_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_sdrh4xp0_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_sdrh4xp0_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_szevov10_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_szevov10_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_tee1migv_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_tee1migv_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_u3m52n0s_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ffbf09650ebbd8036a139b6f64b6e2e6007441cc")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_u3m52n0s_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_u51oedd5_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_u51oedd5_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_ubvj1slt_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_ubvj1slt_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_ue3fx24d_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_ue3fx24d_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_y02dxumq_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_y02dxumq_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_y45kxf2i_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ffbf09650ebbd8036a139b6f64b6e2e6007441cc")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_y45kxf2i_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_ysprxxog_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9d68e27a45a8c2748e5d0545530aca2b128368eb")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_ysprxxog_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+NKM1_yzvtxzmj_wpftmp.AssemblyInfo.cs
+
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ffbf09650ebbd8036a139b6f64b6e2e6007441cc")]
+[assembly: System.Reflection.AssemblyProductAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyTitleAttribute("NKM1")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
+
+// Generated by the MSBuild WriteCodeFragment class.
+
+
+--------------------------------------------------------------------------------
+
+NKM1_yzvtxzmj_wpftmp.GlobalUsings.g.cs
+
+// <auto-generated/>
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.Linq;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+
+--------------------------------------------------------------------------------
+
+ImpulseWindow.g.cs
+
+#pragma checksum "..\..\..\..\Impulse\ImpulseWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "67D2FBB1E8AB768C1A622D3B8C3BF6EBD4A04DEB"
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using NKM1.Impulse;
+using System;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Controls.Ribbon;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Ink;
+using System.Windows.Input;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
+using System.Windows.Media.TextFormatting;
+using System.Windows.Navigation;
+using System.Windows.Shapes;
+using System.Windows.Shell;
+
+
+namespace NKM1.Impulse {
+    
+    
+    /// <summary>
+    /// ImpulseWindow
+    /// </summary>
+    public partial class ImpulseWindow : System.Windows.Window, System.Windows.Markup.IComponentConnector {
+        
+        private bool _contentLoaded;
+        
+        /// <summary>
+        /// InitializeComponent
+        /// </summary>
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public void InitializeComponent() {
+            if (_contentLoaded) {
+                return;
+            }
+            _contentLoaded = true;
+            System.Uri resourceLocater = new System.Uri("/NKM1;component/impulse/impulsewindow.xaml", System.UriKind.Relative);
+            
+            #line 1 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+            System.Windows.Application.LoadComponent(this, resourceLocater);
+            
+            #line default
+            #line hidden
+        }
+        
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1800:DoNotCastUnnecessarily")]
+        void System.Windows.Markup.IComponentConnector.Connect(int connectionId, object target) {
+            this._contentLoaded = true;
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+ImpulseWindow.g.i.cs
+
+#pragma checksum "..\..\..\..\Impulse\ImpulseWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "67D2FBB1E8AB768C1A622D3B8C3BF6EBD4A04DEB"
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using NKM1.Impulse;
+using System;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Controls.Ribbon;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Ink;
+using System.Windows.Input;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
+using System.Windows.Media.TextFormatting;
+using System.Windows.Navigation;
+using System.Windows.Shapes;
+using System.Windows.Shell;
+
+
+namespace NKM1.Impulse {
+    
+    
+    /// <summary>
+    /// ImpulseWindow
+    /// </summary>
+    public partial class ImpulseWindow : System.Windows.Window, System.Windows.Markup.IComponentConnector {
+        
+        private bool _contentLoaded;
+        
+        /// <summary>
+        /// InitializeComponent
+        /// </summary>
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public void InitializeComponent() {
+            if (_contentLoaded) {
+                return;
+            }
+            _contentLoaded = true;
+            System.Uri resourceLocater = new System.Uri("/NKM1;component/impulse/impulsewindow.xaml", System.UriKind.Relative);
+            
+            #line 1 "..\..\..\..\Impulse\ImpulseWindow.xaml"
+            System.Windows.Application.LoadComponent(this, resourceLocater);
+            
+            #line default
+            #line hidden
+        }
+        
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1800:DoNotCastUnnecessarily")]
+        void System.Windows.Markup.IComponentConnector.Connect(int connectionId, object target) {
+            this._contentLoaded = true;
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+AddEdgeWindow.g.cs
+
+#pragma checksum "..\..\..\..\Visual\AddEdgeWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "8B67A35BDF61B29B1ACF6DDEC354E9C7F40D28DD"
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Controls.Ribbon;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Ink;
+using System.Windows.Input;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
+using System.Windows.Media.TextFormatting;
+using System.Windows.Navigation;
+using System.Windows.Shapes;
+using System.Windows.Shell;
+
+
+namespace NKM1.Visual {
+    
+    
+    /// <summary>
+    /// AddEdgeWindow
+    /// </summary>
+    public partial class AddEdgeWindow : System.Windows.Window, System.Windows.Markup.IComponentConnector {
+        
+        
+        #line 17 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.ComboBox CmbSource;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 22 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.ComboBox CmbTarget;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 27 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBox TxtWeight;
+        
+        #line default
+        #line hidden
+        
+        private bool _contentLoaded;
+        
+        /// <summary>
+        /// InitializeComponent
+        /// </summary>
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public void InitializeComponent() {
+            if (_contentLoaded) {
+                return;
+            }
+            _contentLoaded = true;
+            System.Uri resourceLocater = new System.Uri("/NKM1;component/visual/addedgewindow.xaml", System.UriKind.Relative);
+            
+            #line 1 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+            System.Windows.Application.LoadComponent(this, resourceLocater);
+            
+            #line default
+            #line hidden
+        }
+        
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1800:DoNotCastUnnecessarily")]
+        void System.Windows.Markup.IComponentConnector.Connect(int connectionId, object target) {
+            switch (connectionId)
+            {
+            case 1:
+            this.CmbSource = ((System.Windows.Controls.ComboBox)(target));
+            
+            #line 17 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+            this.CmbSource.SelectionChanged += new System.Windows.Controls.SelectionChangedEventHandler(this.CmbSource_SelectionChanged);
+            
+            #line default
+            #line hidden
+            return;
+            case 2:
+            this.CmbTarget = ((System.Windows.Controls.ComboBox)(target));
+            
+            #line 22 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+            this.CmbTarget.SelectionChanged += new System.Windows.Controls.SelectionChangedEventHandler(this.CmbTarget_SelectionChanged);
+            
+            #line default
+            #line hidden
+            return;
+            case 3:
+            this.TxtWeight = ((System.Windows.Controls.TextBox)(target));
+            return;
+            case 4:
+            
+            #line 31 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+            ((System.Windows.Controls.Button)(target)).Click += new System.Windows.RoutedEventHandler(this.BtnAdd_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 5:
+            
+            #line 32 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+            ((System.Windows.Controls.Button)(target)).Click += new System.Windows.RoutedEventHandler(this.BtnCancel_Click);
+            
+            #line default
+            #line hidden
+            return;
+            }
+            this._contentLoaded = true;
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+AddEdgeWindow.g.i.cs
+
+#pragma checksum "..\..\..\..\Visual\AddEdgeWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "8B67A35BDF61B29B1ACF6DDEC354E9C7F40D28DD"
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Controls.Ribbon;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Ink;
+using System.Windows.Input;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
+using System.Windows.Media.TextFormatting;
+using System.Windows.Navigation;
+using System.Windows.Shapes;
+using System.Windows.Shell;
+
+
+namespace NKM1.Visual {
+    
+    
+    /// <summary>
+    /// AddEdgeWindow
+    /// </summary>
+    public partial class AddEdgeWindow : System.Windows.Window, System.Windows.Markup.IComponentConnector {
+        
+        
+        #line 17 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.ComboBox CmbSource;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 22 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.ComboBox CmbTarget;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 27 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBox TxtWeight;
+        
+        #line default
+        #line hidden
+        
+        private bool _contentLoaded;
+        
+        /// <summary>
+        /// InitializeComponent
+        /// </summary>
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public void InitializeComponent() {
+            if (_contentLoaded) {
+                return;
+            }
+            _contentLoaded = true;
+            System.Uri resourceLocater = new System.Uri("/NKM1;V1.0.0.0;component/visual/addedgewindow.xaml", System.UriKind.Relative);
+            
+            #line 1 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+            System.Windows.Application.LoadComponent(this, resourceLocater);
+            
+            #line default
+            #line hidden
+        }
+        
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1800:DoNotCastUnnecessarily")]
+        void System.Windows.Markup.IComponentConnector.Connect(int connectionId, object target) {
+            switch (connectionId)
+            {
+            case 1:
+            this.CmbSource = ((System.Windows.Controls.ComboBox)(target));
+            
+            #line 17 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+            this.CmbSource.SelectionChanged += new System.Windows.Controls.SelectionChangedEventHandler(this.CmbSource_SelectionChanged);
+            
+            #line default
+            #line hidden
+            return;
+            case 2:
+            this.CmbTarget = ((System.Windows.Controls.ComboBox)(target));
+            
+            #line 22 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+            this.CmbTarget.SelectionChanged += new System.Windows.Controls.SelectionChangedEventHandler(this.CmbTarget_SelectionChanged);
+            
+            #line default
+            #line hidden
+            return;
+            case 3:
+            this.TxtWeight = ((System.Windows.Controls.TextBox)(target));
+            return;
+            case 4:
+            
+            #line 31 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+            ((System.Windows.Controls.Button)(target)).Click += new System.Windows.RoutedEventHandler(this.BtnAdd_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 5:
+            
+            #line 32 "..\..\..\..\Visual\AddEdgeWindow.xaml"
+            ((System.Windows.Controls.Button)(target)).Click += new System.Windows.RoutedEventHandler(this.BtnCancel_Click);
+            
+            #line default
+            #line hidden
+            return;
+            }
+            this._contentLoaded = true;
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+AddVertexWindow.g.cs
+
+#pragma checksum "..\..\..\..\Visual\AddVertexWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "FACBDB141EDC85AFE37E835A65CD5CD264D65411"
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Controls.Ribbon;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Ink;
+using System.Windows.Input;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
+using System.Windows.Media.TextFormatting;
+using System.Windows.Navigation;
+using System.Windows.Shapes;
+using System.Windows.Shell;
+
+
+namespace NKM1.Visual {
+    
+    
+    /// <summary>
+    /// AddVertexWindow
+    /// </summary>
+    public partial class AddVertexWindow : System.Windows.Window, System.Windows.Markup.IComponentConnector {
+        
+        
+        #line 15 "..\..\..\..\Visual\AddVertexWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBox TxtName;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 18 "..\..\..\..\Visual\AddVertexWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnAdd;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 19 "..\..\..\..\Visual\AddVertexWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnCancel;
+        
+        #line default
+        #line hidden
+        
+        private bool _contentLoaded;
+        
+        /// <summary>
+        /// InitializeComponent
+        /// </summary>
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public void InitializeComponent() {
+            if (_contentLoaded) {
+                return;
+            }
+            _contentLoaded = true;
+            System.Uri resourceLocater = new System.Uri("/NKM1;component/visual/addvertexwindow.xaml", System.UriKind.Relative);
+            
+            #line 1 "..\..\..\..\Visual\AddVertexWindow.xaml"
+            System.Windows.Application.LoadComponent(this, resourceLocater);
+            
+            #line default
+            #line hidden
+        }
+        
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1800:DoNotCastUnnecessarily")]
+        void System.Windows.Markup.IComponentConnector.Connect(int connectionId, object target) {
+            switch (connectionId)
+            {
+            case 1:
+            this.TxtName = ((System.Windows.Controls.TextBox)(target));
+            return;
+            case 2:
+            this.BtnAdd = ((System.Windows.Controls.Button)(target));
+            
+            #line 18 "..\..\..\..\Visual\AddVertexWindow.xaml"
+            this.BtnAdd.Click += new System.Windows.RoutedEventHandler(this.BtnAdd_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 3:
+            this.BtnCancel = ((System.Windows.Controls.Button)(target));
+            
+            #line 19 "..\..\..\..\Visual\AddVertexWindow.xaml"
+            this.BtnCancel.Click += new System.Windows.RoutedEventHandler(this.BtnCancel_Click);
+            
+            #line default
+            #line hidden
+            return;
+            }
+            this._contentLoaded = true;
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+AddVertexWindow.g.i.cs
+
+#pragma checksum "..\..\..\..\Visual\AddVertexWindow.xaml" "{ff1816ec-aa5e-4d10-87f7-6f4963833460}" "FACBDB141EDC85AFE37E835A65CD5CD264D65411"
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//     Runtime Version:4.0.30319.42000
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Diagnostics;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Controls.Ribbon;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Ink;
+using System.Windows.Input;
+using System.Windows.Markup;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
+using System.Windows.Media.TextFormatting;
+using System.Windows.Navigation;
+using System.Windows.Shapes;
+using System.Windows.Shell;
+
+
+namespace NKM1.Visual {
+    
+    
+    /// <summary>
+    /// AddVertexWindow
+    /// </summary>
+    public partial class AddVertexWindow : System.Windows.Window, System.Windows.Markup.IComponentConnector {
+        
+        
+        #line 15 "..\..\..\..\Visual\AddVertexWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.TextBox TxtName;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 18 "..\..\..\..\Visual\AddVertexWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnAdd;
+        
+        #line default
+        #line hidden
+        
+        
+        #line 19 "..\..\..\..\Visual\AddVertexWindow.xaml"
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1823:AvoidUnusedPrivateFields")]
+        internal System.Windows.Controls.Button BtnCancel;
+        
+        #line default
+        #line hidden
+        
+        private bool _contentLoaded;
+        
+        /// <summary>
+        /// InitializeComponent
+        /// </summary>
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        public void InitializeComponent() {
+            if (_contentLoaded) {
+                return;
+            }
+            _contentLoaded = true;
+            System.Uri resourceLocater = new System.Uri("/NKM1;V1.0.0.0;component/visual/addvertexwindow.xaml", System.UriKind.Relative);
+            
+            #line 1 "..\..\..\..\Visual\AddVertexWindow.xaml"
+            System.Windows.Application.LoadComponent(this, resourceLocater);
+            
+            #line default
+            #line hidden
+        }
+        
+        [System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [System.CodeDom.Compiler.GeneratedCodeAttribute("PresentationBuildTasks", "9.0.8.0")]
+        [System.ComponentModel.EditorBrowsableAttribute(System.ComponentModel.EditorBrowsableState.Never)]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Design", "CA1033:InterfaceMethodsShouldBeCallableByChildTypes")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
+        [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute("Microsoft.Performance", "CA1800:DoNotCastUnnecessarily")]
+        void System.Windows.Markup.IComponentConnector.Connect(int connectionId, object target) {
+            switch (connectionId)
+            {
+            case 1:
+            this.TxtName = ((System.Windows.Controls.TextBox)(target));
+            return;
+            case 2:
+            this.BtnAdd = ((System.Windows.Controls.Button)(target));
+            
+            #line 18 "..\..\..\..\Visual\AddVertexWindow.xaml"
+            this.BtnAdd.Click += new System.Windows.RoutedEventHandler(this.BtnAdd_Click);
+            
+            #line default
+            #line hidden
+            return;
+            case 3:
+            this.BtnCancel = ((System.Windows.Controls.Button)(target));
+            
+            #line 19 "..\..\..\..\Visual\AddVertexWindow.xaml"
+            this.BtnCancel.Click += new System.Windows.RoutedEventHandler(this.BtnCancel_Click);
+            
+            #line default
+            #line hidden
+            return;
+            }
+            this._contentLoaded = true;
+        }
+    }
+}
+
+
+--------------------------------------------------------------------------------
+
+App.xaml
+
+<Application x:Class="NKM1.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:NKM1"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+         
+    </Application.Resources>
+</Application>
+
+--------------------------------------------------------------------------------
+
+MainWindow.xaml
+
+<Window x:Class="NKM1.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+        xmlns:controls="http://schemas.panthernet.ru/graphx/"
+        xmlns:visual="clr-namespace:NKM1.Visual"
+        xmlns:local="clr-namespace:NKM1"
+        mc:Ignorable="d"
+        Title="NKM Graph Simulator" Height="800" Width="1200">
+    <DockPanel>
+        <ToolBar DockPanel.Dock="Top">
+            <Button Name="BtnAddVertex" Click="BtnAddVertex_Click">Добавить вершину</Button>
+            <Button Name="BtnRemoveVertex" Click="BtnRemoveVertex_Click">Удалить вершину</Button>
+            <Button Name="BtnAddEdge" Click="BtnAddEdge_Click">Добавить связь</Button>
+            <Button Name="BtnRemoveEdge" Click="BtnRemoveEdge_Click">Удалить связь</Button>
+            <Separator />
+            <TextBlock VerticalAlignment="Center">Вес связи:</TextBlock>
+            <TextBox Name="TxtEdgeWeight" Width="60" Text="1.0" />
+            <Button Name="BtnSetWeight" Click="BtnSetWeight_Click">Установить</Button>
+            <Separator />
+			<Button Name="BtnLayout" Click="BtnLayout_Click">Layout</Button>
+			<Separator />
+			<Button Name="BtnCycle" Click="BtnCycle_Click">Циклы</Button>
+			<Separator />
+			<Button Name="BtnImpulse" Click="BtnImpulse_Click">Импульсы</Button>
+		</ToolBar>
+
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="3*" />
+                <ColumnDefinition Width="1*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Используем один ZoomControl как хост для GraphArea (GraphArea создаём в коде) -->
+            <controls:ZoomControl x:Name="ZoomCtrl" Grid.Column="0" Background="LightGray" >
+				<visual:DataGraphArea x:Name="graphArea"/>
+            </controls:ZoomControl>
+
+
+            <!-- Правая панель: списки и свойства -->
+            <StackPanel Grid.Column="1" Margin="8">
+                <TextBlock FontWeight="Bold">Вершины</TextBlock>
+                <ListBox Name="LstVertices" Height="220" SelectionMode="Extended" SelectionChanged="LstVertices_SelectionChanged" />
+
+
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                    <TextBox Name="TxtVertexName" Width="140" />
+                    <Button Name="BtnSetVertexName" Click="BtnSetVertexName_Click" Margin="4,0,0,0">Переименовать</Button>
+                </StackPanel>
+
+
+                <TextBlock FontWeight="Bold" Margin="0,8,0,0">Связи</TextBlock>
+                <ListBox Name="LstEdges" Height="160" SelectionChanged="LstEdges_SelectionChanged" />
+
+
+                <GroupBox Header="Выбранная связь" Margin="0,8,0,0">
+                    <StackPanel>
+                        <TextBlock>Id:</TextBlock>
+                        <TextBlock Name="TxtSelectedEdgeId" />
+                        <TextBlock>Вес:</TextBlock>
+                        <TextBlock Name="TxtSelectedEdgeWeight" />
+                    </StackPanel>
+                </GroupBox>
+
+
+            </StackPanel>
+        </Grid>
+    </DockPanel>
+</Window>
+
+--------------------------------------------------------------------------------
+
+ImpulseWindow.xaml
+
+<Window x:Class="NKM1.Impulse.ImpulseWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:NKM1.Impulse"
+        mc:Ignorable="d"
+        Title="Window1" Height="450" Width="800">
+    <Grid>
+        
+    </Grid>
+</Window>
+
+--------------------------------------------------------------------------------
+
+AddEdgeWindow.xaml
+
+<Window x:Class="NKM1.Visual.AddEdgeWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Добавить связь" Height="250" Width="400"
+        WindowStartupLocation="CenterOwner">
+
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal" Margin="0 5">
+            <TextBlock Text="Источник:" Width="120" VerticalAlignment="Center"/>
+            <ComboBox x:Name="CmbSource" Width="200" SelectionChanged="CmbSource_SelectionChanged"/>
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal" Margin="0 5" Grid.Row="1">
+            <TextBlock Text="Цель:" Width="120" VerticalAlignment="Center"/>
+            <ComboBox x:Name="CmbTarget" Width="200" SelectionChanged="CmbTarget_SelectionChanged"/>
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal" Margin="0 5" Grid.Row="2">
+            <TextBlock Text="Вес ([-1; 1]):" Width="120" VerticalAlignment="Center"/>
+            <TextBox x:Name="TxtWeight" Width="80"/>
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0 10 0 0" Grid.Row="3">
+            <Button Content="Добавить" Width="100" Margin="5" Click="BtnAdd_Click"/>
+            <Button Content="Отмена" Width="100" Margin="5" Click="BtnCancel_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>
+
+--------------------------------------------------------------------------------
+
+AddVertexWindow.xaml
+
+<Window x:Class="NKM1.Visual.AddVertexWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Добавить фактор" Height="180" Width="320"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="Имя фактора:" Margin="0,0,0,5"/>
+        <TextBox x:Name="TxtName" Grid.Row="1" Height="28" />
+
+        <StackPanel Orientation="Horizontal" Grid.Row="2" Margin="0,15,0,0" HorizontalAlignment="Center">
+            <Button x:Name="BtnAdd" Content="Добавить" Width="100" Margin="5" Click="BtnAdd_Click"/>
+            <Button x:Name="BtnCancel" Content="Отмена" Width="100" Margin="5" Click="BtnCancel_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>
+
+--------------------------------------------------------------------------------
+
